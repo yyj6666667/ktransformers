@@ -205,17 +205,32 @@ def load_extension(variant):
         else:
             ext_patterns = [".*.so"]
 
+        # Also search CMake multi-config output dirs (Release/, Debug/, etc.) on Windows
+        search_dirs = [kt_kernel_dir]
+        if sys.platform == "win32":
+            search_dirs += [
+                os.path.join(kt_kernel_dir, d)
+                for d in ("Release", "RelWithDebInfo", "MinSizeRel", "Debug")
+                if os.path.isdir(os.path.join(kt_kernel_dir, d))
+            ]
+
         # Try multi-variant naming first
         ext_files = []
-        for ext_pat in ext_patterns:
-            pattern = os.path.join(kt_kernel_dir, f"_kt_kernel_ext_{variant}{ext_pat}")
-            ext_files.extend(glob.glob(pattern))
+        for search_dir in search_dirs:
+            for ext_pat in ext_patterns:
+                pattern = os.path.join(search_dir, f"_kt_kernel_ext_{variant}{ext_pat}")
+                ext_files.extend(glob.glob(pattern))
+            if ext_files:
+                break
 
         if not ext_files:
             # Try single-variant naming (fallback for builds without CPUINFER_BUILD_ALL_VARIANTS)
-            for ext_pat in ext_patterns:
-                pattern = os.path.join(kt_kernel_dir, f"kt_kernel_ext{ext_pat}")
-                ext_files.extend(glob.glob(pattern))
+            for search_dir in search_dirs:
+                for ext_pat in ext_patterns:
+                    pattern = os.path.join(search_dir, f"kt_kernel_ext{ext_pat}")
+                    ext_files.extend(glob.glob(pattern))
+                if ext_files:
+                    break
 
             if ext_files:
                 if os.environ.get("KT_KERNEL_DEBUG") == "1":
@@ -229,6 +244,12 @@ def load_extension(variant):
 
         if os.environ.get("KT_KERNEL_DEBUG") == "1":
             print(f"[kt-kernel] Loading {variant} from: {ext_file}")
+
+        # Ensure co-located DLLs (e.g. hwloc-15.dll) are discoverable on Windows
+        if sys.platform == "win32":
+            ext_dir = os.path.dirname(os.path.abspath(ext_file))
+            if ext_dir != kt_kernel_dir and hasattr(os, "add_dll_directory"):
+                os.add_dll_directory(ext_dir)
 
         # Load the module manually
         # The module exports PyInit_kt_kernel_ext, so we use that as the module name

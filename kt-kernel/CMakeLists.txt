@@ -127,6 +127,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 add_compile_definitions(FMT_HEADER_ONLY)
 
 if(MSVC)
+    add_compile_definitions(NOMINMAX)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /O2 /fp:fast")
 else()
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -ffast-math")
@@ -574,20 +575,14 @@ else()
     )
 endif()
 
-# Find hwloc: try find_package first (works with vcpkg on Windows), then pkg-config
-find_package(hwloc CONFIG QUIET)
-if(hwloc_FOUND)
-    message(STATUS "Found hwloc via find_package (CONFIG)")
-    set(HWLOC_TARGET hwloc::hwloc)
-else()
-    include(FindPkgConfig)
-    if(PKG_CONFIG_FOUND)
-        pkg_search_module(HWLOC REQUIRED IMPORTED_TARGET hwloc)
-        set(HWLOC_TARGET PkgConfig::HWLOC)
-    else()
-        message(FATAL_ERROR "hwloc not found. Install via: apt install libhwloc-dev (Linux) or vcpkg install hwloc (Windows)")
-    endif()
-endif()
+find_path(HWLOC_INCLUDE_DIR hwloc.h REQUIRED)
+find_library(HWLOC_LIBRARY NAMES hwloc REQUIRED)
+add_library(hwloc::hwloc UNKNOWN IMPORTED)
+set_target_properties(hwloc::hwloc PROPERTIES
+    IMPORTED_LOCATION "${HWLOC_LIBRARY}"
+    INTERFACE_INCLUDE_DIRECTORIES "${HWLOC_INCLUDE_DIR}"
+)
+set(HWLOC_TARGET hwloc::hwloc)
 
 
 add_library(llamafile STATIC ${SOURCE_DIR4})

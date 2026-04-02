@@ -13,9 +13,30 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <stdexcept>
 #include <type_traits>
+
+#ifdef _WIN32
+#include <malloc.h>
+#endif
+
+inline void* op_aligned_alloc(size_t alignment, size_t size) {
+#ifdef _WIN32
+  return _aligned_malloc(size, alignment);
+#else
+  return std::aligned_alloc(alignment, size);
+#endif
+}
+
+inline void op_aligned_free(void* ptr) {
+#ifdef _WIN32
+  _aligned_free(ptr);
+#else
+  free(ptr);
+#endif
+}
 
 // #define FORWARD_TIME_PROFILE
 // #define FORWARD_TIME_REPORT
