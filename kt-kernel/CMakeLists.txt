@@ -27,7 +27,7 @@ option(KTRANSFORMERS_CPU_MOE_AMD "ktransformers: CPU use moe kernel for amd" OFF
 # LTO control
 option(CPUINFER_ENABLE_LTO "Enable link time optimization (IPO)" OFF)
 
-project(kt_kernel_ext VERSION 0.5.0)
+project(kt_kernel_ext VERSION 0.5.3)
 
 # Auto-detect CPU features early (unless building with LLAMA_NATIVE)
 if(NOT LLAMA_NATIVE AND NOT MSVC)
@@ -637,7 +637,7 @@ if(NOT HOST_IS_X86 AND KTRANSFORMERS_CPU_USE_KML)
         ${CMAKE_CURRENT_SOURCE_DIR}/operators/moe_kernel/mat_kernel/kml_kernel/batch_gemm_kernels.cpp
     )
     add_library(decode_gemm SHARED ${DECODE_GEMM_SOURCES})
-    target_link_libraries(${PROJECT_NAME} PRIVATE decode_gemm)  
+    target_link_libraries(${PROJECT_NAME} PRIVATE decode_gemm)
     if(KTRANSFORMERS_CPU_MLA)
         target_link_libraries(${PROJECT_NAME} PRIVATE kml_rt)
     endif()
@@ -701,6 +701,14 @@ endif()
 
 
 
+
 # libnuma is no longer required — NUMA support is provided via hwloc (cross-platform).
 # On Linux, hwloc itself links to libnuma internally when available.
 
+#find_library(NUMA_LIBRARY NAMES numa)
+#if(NUMA_LIBRARY)
+#    message(STATUS "NUMA library found: ${NUMA_LIBRARY} - enabling NUMA support")
+#    target_link_libraries(${PROJECT_NAME} PRIVATE ${NUMA_LIBRARY})
+#else()
+#    message(FATAL_ERROR "NUMA library not found, please install NUMA, sudo apt install libnuma-dev")
+#endif()
