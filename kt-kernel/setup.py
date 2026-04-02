@@ -545,6 +545,33 @@ class CMakeBuild(build_ext):
             f"-DCMAKE_BUILD_TYPE={cfg}",
         ]
 
+        # On Windows, auto-detect vcpkg toolchain so hwloc (and other deps)
+        # can be found without requiring the user to run build_win.ps1 first.
+        if sys.platform == "win32":
+            has_toolchain = any("CMAKE_TOOLCHAIN_FILE" in a for a in cmake_args)
+            if not has_toolchain:
+                extra_env = os.environ.get("CMAKE_ARGS", "")
+                if "CMAKE_TOOLCHAIN_FILE" not in extra_env:
+                    # Search: local vcpkg in repo root, then VCPKG_ROOT env
+                    repo_root = Path(__file__).resolve().parent.parent
+                    candidates = [
+                        repo_root / "vcpkg" / "scripts" / "buildsystems" / "vcpkg.cmake",
+                    ]
+                    vcpkg_root = os.environ.get("VCPKG_ROOT")
+                    if vcpkg_root:
+                        candidates.insert(0, Path(vcpkg_root) / "scripts" / "buildsystems" / "vcpkg.cmake")
+                    for tc in candidates:
+                        if tc.exists():
+                            tc_posix = str(tc).replace("\\", "/")
+                            cmake_args.append(f"-DCMAKE_TOOLCHAIN_FILE={tc_posix}")
+                            print(f"-- Auto-detected vcpkg toolchain: {tc_posix}")
+                            break
+                    else:
+                        print(
+                            "-- Warning: vcpkg toolchain not found. hwloc may not be discoverable.\n"
+                            "   Run scripts\\setup_win_deps.ps1 first, or set VCPKG_ROOT / CMAKE_TOOLCHAIN_FILE."
+                        )
+
         # CPU feature flags mapping: if user specified CPUINFER_CPU_INSTRUCT, honor it;
         # else auto-pick based on detection (x86 only)
         cmake_args += cpu_feature_flags()
