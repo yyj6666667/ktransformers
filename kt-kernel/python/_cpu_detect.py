@@ -187,9 +187,11 @@ def load_extension(variant):
     import importlib.util
     import glob
 
-    # The .so files can be named in two ways:
-    # Multi-variant: _kt_kernel_ext_amx.cpython-311-x86_64-linux-gnu.so
-    # Single-variant: kt_kernel_ext.cpython-311-x86_64-linux-gnu.so
+    # Extension files can be named in two ways:
+    # Multi-variant: _kt_kernel_ext_amx.cpython-311-x86_64-linux-gnu.so (Linux)
+    #                _kt_kernel_ext_amx.pyd (Windows)
+    # Single-variant: kt_kernel_ext.cpython-311-x86_64-linux-gnu.so (Linux)
+    #                 kt_kernel_ext.pyd (Windows)
     # Both export PyInit_kt_kernel_ext (the original module name)
 
     try:
@@ -197,33 +199,42 @@ def load_extension(variant):
         # We can't import kt_kernel here (circular import), so use __file__
         kt_kernel_dir = os.path.dirname(os.path.abspath(__file__))
 
+        # Platform-specific extension suffixes
+        if sys.platform == "win32":
+            ext_patterns = [".pyd", ".*.pyd", ".dll"]
+        else:
+            ext_patterns = [".*.so"]
+
         # Try multi-variant naming first
-        pattern = os.path.join(kt_kernel_dir, f"_kt_kernel_ext_{variant}.*.so")
-        so_files = glob.glob(pattern)
+        ext_files = []
+        for ext_pat in ext_patterns:
+            pattern = os.path.join(kt_kernel_dir, f"_kt_kernel_ext_{variant}{ext_pat}")
+            ext_files.extend(glob.glob(pattern))
 
-        if not so_files:
+        if not ext_files:
             # Try single-variant naming (fallback for builds without CPUINFER_BUILD_ALL_VARIANTS)
-            pattern = os.path.join(kt_kernel_dir, "kt_kernel_ext.*.so")
-            so_files = glob.glob(pattern)
+            for ext_pat in ext_patterns:
+                pattern = os.path.join(kt_kernel_dir, f"kt_kernel_ext{ext_pat}")
+                ext_files.extend(glob.glob(pattern))
 
-            if so_files:
+            if ext_files:
                 if os.environ.get("KT_KERNEL_DEBUG") == "1":
                     print(f"[kt-kernel] Multi-variant {variant} not found, using single-variant build")
             else:
                 raise ImportError(
-                    f"No .so file found for variant {variant} (tried patterns: {kt_kernel_dir}/_kt_kernel_ext_{variant}.*.so and {kt_kernel_dir}/kt_kernel_ext.*.so)"
+                    f"No extension file found for variant {variant} in {kt_kernel_dir}"
                 )
 
-        so_file = so_files[0]
+        ext_file = ext_files[0]
 
         if os.environ.get("KT_KERNEL_DEBUG") == "1":
-            print(f"[kt-kernel] Loading {variant} from: {so_file}")
+            print(f"[kt-kernel] Loading {variant} from: {ext_file}")
 
         # Load the module manually
         # The module exports PyInit_kt_kernel_ext, so we use that as the module name
-        spec = importlib.util.spec_from_file_location("kt_kernel_ext", so_file)
+        spec = importlib.util.spec_from_file_location("kt_kernel_ext", ext_file)
         if spec is None or spec.loader is None:
-            raise ImportError(f"Failed to create spec for {so_file}")
+            raise ImportError(f"Failed to create spec for {ext_file}")
 
         ext = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(ext)

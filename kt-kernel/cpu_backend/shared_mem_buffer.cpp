@@ -10,9 +10,10 @@
 #include "shared_mem_buffer.h"
 
 #include <errno.h>
-#include <numa.h>
 
 #include <cstdio>
+
+#include "numa_compat.h"
 
 size_t MemoryRequest::total_size() {
   size_t total = 0;
@@ -42,7 +43,7 @@ SharedMemBuffer::SharedMemBuffer() {
 
 SharedMemBuffer::~SharedMemBuffer() {
   if (buffer) {
-    free(buffer);
+    compat_aligned_free(buffer);
   }
 }
 
@@ -52,14 +53,14 @@ void SharedMemBuffer::alloc(void* object, MemoryRequest requests) {
 
   if (total_size > size) {
     if (buffer) {
-      free(buffer);
+      compat_aligned_free(buffer);
     }
     void* newbuf = nullptr;
-    int rc = posix_memalign(&newbuf, 64, total_size);
+    int rc = compat_posix_memalign(&newbuf, 64, total_size);
     if (rc != 0 || !newbuf) {
-      errno = rc;  // posix_memalign returns error code instead of setting errno
+      errno = rc;
       printf("cannot aligned alloc %zu bytes (align=%d)\n", (size_t)total_size, 64);
-      perror("posix_memalign");  // ENOMEM/EINVAL
+      perror("aligned alloc");
       exit(1);
     }
     buffer = newbuf;
@@ -74,7 +75,7 @@ void SharedMemBuffer::alloc(void* object, MemoryRequest requests) {
 
 void SharedMemBufferNuma::alloc(int numa, void* object, MemoryRequest requests) {
   std::lock_guard<std::mutex> guard(lock);
-  if (numa != numa_node_of_cpu(sched_getcpu())) {
+  if (numa != hwloc_current_numa_node()) {
     printf("alloc %d from other numa for %lx\n", numa, reinterpret_cast<intptr_t>(object));
   }
   if (numa_mem.count(numa) == 0) {

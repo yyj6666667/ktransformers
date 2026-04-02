@@ -11,8 +11,6 @@
 #include "worker_pool.h"
 
 #include <hwloc/bitmap.h>
-#include <numa.h>
-#include <numaif.h>
 
 #include <algorithm>
 #include <cassert>
@@ -21,11 +19,12 @@
 #include <stdexcept>
 
 #include "hwloc.h"
+#include "numa_compat.h"
 
 thread_local int WorkerPool::thread_local_id = -1;
 
 InNumaPool::InNumaPool(int max_thread_num) {
-  printf("In Numa Worker Pool at NUMA %d, %d threads\n", numa_node_of_cpu(sched_getcpu()), max_thread_num);
+  printf("In Numa Worker Pool at NUMA %d, %d threads\n", hwloc_current_numa_node(), max_thread_num);
   total_worker_count = max_thread_num;
   set_restricted_worker_count(total_worker_count);
   thread_state_ = std::unique_ptr<ThreadState[]>(new ThreadState[max_thread_num]);
@@ -45,7 +44,7 @@ InNumaPool::InNumaPool(int max_thread_num, int numa_id, int threads_id_start) {
   hwloc_bitmap_t cpuset;
   hwloc_topology_init(&topology);
   hwloc_topology_load(topology);
-  printf("In Numa Worker Pool at NUMA %d, %d threads\n", numa_node_of_cpu(sched_getcpu()), max_thread_num);
+  printf("In Numa Worker Pool at NUMA %d, %d threads\n", hwloc_current_numa_node(), max_thread_num);
   total_worker_count = max_thread_num;
   set_restricted_worker_count(total_worker_count);
   thread_state_ = std::unique_ptr<ThreadState[]>(new ThreadState[max_thread_num]);
@@ -57,19 +56,11 @@ InNumaPool::InNumaPool(int max_thread_num, int numa_id, int threads_id_start) {
     workers_[i] = std::thread(&InNumaPool::worker_thread, this, i, numa_id);
     // set the thread name as: "numa_(numa_id)_t_(i+threads_id_start)"
     std::string thread_name = "numa_" + std::to_string(numa_id) + "_t_" + std::to_string(i + threads_id_start);
-    pthread_t native_handle = workers_[i].native_handle();
-    auto res_set_name = pthread_setname_np(native_handle, thread_name.c_str());
-    if (res_set_name != 0) {
-      fprintf(stderr, "Failed to set thread name: %s\n", strerror(res_set_name));
-    }
+    auto native_handle = workers_[i].native_handle();
+    compat_set_thread_name(native_handle, thread_name.c_str());
     // 检查线程是否成功命名
     char name[16];
-    pthread_getname_np(native_handle, name, sizeof(name));
-    if (strcmp(name, thread_name.c_str()) == 0) {
-      // printf("Thread name set successfully: %s\n", name);
-    } else {
-      // printf("Failed to set thread name: %s\n", name);
-    }
+    compat_get_thread_name(native_handle, name, sizeof(name));
     // Set the thread affinity to the specified NUMA node's CPU
     numa_obj = hwloc_get_obj_by_type(topology, HWLOC_OBJ_NUMANODE, numa_id);
     if (!numa_obj) {
@@ -290,8 +281,8 @@ void NumaJobDistributor::init(std::vector<int> numa_ids, std::vector<int> thread
     // set the thread name as: "worker_numa_(numa_id)_main_start_id(0)"
     // printf("nuam_id %d, start_id %d\n", this_numa, start_id);
     std::string thread_name = "numa_" + std::to_string(numa_ids[i]) + "_m_" + std::to_string(start_id);
-    pthread_t native_handle = workers[i].native_handle();
-    pthread_setname_np(native_handle, thread_name.c_str());
+    auto native_handle = workers[i].native_handle();
+    compat_set_thread_name(native_handle, thread_name.c_str());
     // Set the thread affinity to the specified NUMA node's CPU (0)
     numa_obj = hwloc_get_obj_by_type(topology, HWLOC_OBJ_NUMANODE, this_numa);
     if (!numa_obj) {
@@ -347,7 +338,7 @@ NumaJobDistributor::~NumaJobDistributor() {
 
 void NumaJobDistributor::do_numa_job(std::function<void(int)> compute_func) {
   this->compute_func = compute_func;
-  auto me_numa = numa_node_of_cpu(sched_getcpu());
+  auto me_numa = hwloc_current_numa_node();
   for (int i = 0; i < numa_count; i++) {
     if (i == me_numa) continue;
 
@@ -391,7 +382,7 @@ void NumaJobDistributor::worker_thread(int numa_id) {
   while (true) {
     auto stat = status[numa_id]->load(std::memory_order_acquire);
     if (stat == ThreadStatus::WORKING) {
-      auto me_numa = numa_node_of_cpu(sched_getcpu());
+      auto me_numa = hwloc_current_numa_node();
       // printf("numa work on %d, me %d\n", numa_id, me_numa);
       compute_func(numa_id);
       status[numa_id]->store(ThreadStatus::WAITING, std::memory_order_release);
@@ -443,7 +434,7 @@ void WorkerPool::init(WorkerPoolConfig config) {
 WorkerPool::WorkerPool(WorkerPoolConfig config) : config(config) { init(config); }
 
 WorkerPool::WorkerPool(int total_threads) {
-  config.subpool_count = numa_num_configured_nodes();
+  config.subpool_count = hwloc_numa_num_nodes();
   config.subpool_numa_map.resize(config.subpool_count);
   config.subpool_thread_count.resize(config.subpool_count);
   for (int i = 0; i < config.subpool_count; i++) {
@@ -455,7 +446,7 @@ WorkerPool::WorkerPool(int total_threads) {
 
 WorkerPool::WorkerPool(int total_threads, int single_numa_id) {
   set_to_numa(single_numa_id);
-  config.subpool_count = numa_num_configured_nodes();
+  config.subpool_count = hwloc_numa_num_nodes();
   config.subpool_numa_map.resize(config.subpool_count);
   config.subpool_thread_count.resize(config.subpool_count);
   for (int i = 0; i < config.subpool_count; i++) {

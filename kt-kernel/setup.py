@@ -229,14 +229,30 @@ class CMakeBuild(build_ext):
                 # No AVX/AMX on Apple Silicon; assume none
 
             elif sysname == "Windows":
-                # Minimal detection via arch; detailed CPUID omitted for brevity
                 arch = platform.machine().lower()
                 info["arch"] = arch
                 if arch in ("arm64", "aarch64"):
                     info["vendor"] = "arm"
                 else:
-                    # Could be Intel or AMD; leave unknown
-                    info["vendor"] = "unknown"
+                    # Try to detect vendor and features via registry or cpufeature
+                    try:
+                        import cpufeature
+                        cpu_info_str = str(cpufeature.CPUFeature).lower()
+                        if "genuineintel" in cpu_info_str:
+                            info["vendor"] = "intel"
+                        elif "authenticamd" in cpu_info_str:
+                            info["vendor"] = "amd"
+                        # Detect features via cpufeature
+                        feature_map = {
+                            "AVX2": "AVX2", "AVX512F": "AVX512",
+                            "AMX_TILE": "AMX", "AVX512_VNNI": "AVX512_VNNI",
+                            "AVX512_BF16": "AVX512_BF16", "AVX512_VBMI": "AVX512_VBMI",
+                        }
+                        for cpuf_key, feat_name in feature_map.items():
+                            if cpufeature.CPUFeature.get(cpuf_key, False):
+                                info["features"].add(feat_name)
+                    except ImportError:
+                        pass
         except Exception as e:
             print(f"Warning: CPU detection failed: {e}")
         return info
@@ -389,15 +405,16 @@ class CMakeBuild(build_ext):
             # Build this variant
             self._build_single_variant_impl(ext, extdir, build_temp, cfg)
 
-            # Rename the built .so file to include variant suffix
-            # Original name: kt_kernel_ext.cpython-311-x86_64-linux-gnu.so
-            # New name: _kt_kernel_ext_amx.cpython-311-x86_64-linux-gnu.so
-            built_so_files = list(extdir.glob(f"{ext.name.split('.')[-1]}.*.so"))
-            if built_so_files:
-                original_so = built_so_files[0]
-                # Extract the suffix after the module name
-                # e.g., "kt_kernel_ext.cpython-311-x86_64-linux-gnu.so" -> ".cpython-311-x86_64-linux-gnu.so"
-                suffix = original_so.name.replace(ext.name.split(".")[-1], "")
+            # Rename the built extension file to include variant suffix
+            # Linux: kt_kernel_ext.cpython-311-x86_64-linux-gnu.so
+            # Windows: kt_kernel_ext.pyd
+            ext_suffix = ".pyd" if sys.platform == "win32" else ".so"
+            module_base = ext.name.split(".")[-1]
+            built_ext_files = list(extdir.glob(f"{module_base}.*{ext_suffix}")) + \
+                              list(extdir.glob(f"{module_base}{ext_suffix}"))
+            if built_ext_files:
+                original_ext = built_ext_files[0]
+                suffix = original_ext.name.replace(module_base, "")
                 new_name = f"_kt_kernel_ext_{variant_name}{suffix}"
                 new_path = extdir / new_name
 
@@ -406,11 +423,11 @@ class CMakeBuild(build_ext):
                     new_path.unlink()
 
                 # Rename
-                original_so.rename(new_path)
-                print(f"✓ Built and renamed to: {new_name}")
+                original_ext.rename(new_path)
+                print(f"Built and renamed to: {new_name}")
                 print()
             else:
-                print(f"⚠ Warning: Could not find built .so file for {variant_name} variant")
+                print(f"Warning: Could not find built extension file for {variant_name} variant")
                 print()
 
         # Restore original env vars
@@ -425,7 +442,8 @@ class CMakeBuild(build_ext):
         print("=" * 70)
         print()
         print("The wheel now contains 6 CPU variants:")
-        for so_file in sorted(extdir.glob("_kt_kernel_ext_*.so")):
+        ext_glob = "*.pyd" if sys.platform == "win32" else "*.so"
+        for so_file in sorted(extdir.glob(f"_kt_kernel_ext_{ext_glob}")):
             print(f"  - {so_file.name}")
         print()
 
@@ -453,40 +471,60 @@ class CMakeBuild(build_ext):
         """
 
         # Auto-detect CUDA toolkit if user did not explicitly set CPUINFER_USE_CUDA
+        def _nvcc_exe() -> str:
+            return "nvcc.exe" if sys.platform == "win32" else "nvcc"
+
         def detect_cuda_toolkit() -> bool:
             # Respect CUDA_HOME
             cuda_home = os.environ.get("CUDA_HOME")
             if cuda_home:
-                nvcc_path = Path(cuda_home) / "bin" / "nvcc"
+                nvcc_path = Path(cuda_home) / "bin" / _nvcc_exe()
                 if nvcc_path.exists():
                     return True
             # PATH lookup
-            if shutil.which("nvcc") is not None:
+            if shutil.which(_nvcc_exe()) is not None:
                 return True
-            # Common default install prefix
-            if Path("/usr/local/cuda/bin/nvcc").exists():
-                return True
+            # Common default install prefixes
+            for prefix in _cuda_search_prefixes():
+                if (Path(prefix) / "bin" / _nvcc_exe()).exists():
+                    return True
             return False
+
+        def _cuda_search_prefixes() -> list[str]:
+            """Return platform-specific CUDA search directories."""
+            if sys.platform == "win32":
+                base = os.environ.get("ProgramFiles", r"C:\Program Files")
+                cuda_base = Path(base) / "NVIDIA GPU Computing Toolkit" / "CUDA"
+                prefixes = []
+                if cuda_base.exists():
+                    # Search version dirs in reverse order (newest first)
+                    for d in sorted(cuda_base.iterdir(), reverse=True):
+                        if d.is_dir() and d.name.startswith("v"):
+                            prefixes.append(str(d))
+                return prefixes
+            else:
+                return [
+                    "/usr/local/cuda-12.6",
+                    "/usr/local/cuda",
+                    "/usr",
+                    "/usr/lib/nvidia-cuda-toolkit",
+                ]
 
         # Locate nvcc executable (without forcing user to set -DCMAKE_CUDA_COMPILER)
         def find_nvcc_path() -> str | None:
             cuda_home = os.environ.get("CUDA_HOME")
             if cuda_home:
-                cand = Path(cuda_home) / "bin" / "nvcc"
+                cand = Path(cuda_home) / "bin" / _nvcc_exe()
                 if cand.exists():
                     return str(cand)
-            which_nvcc = shutil.which("nvcc")
+            which_nvcc = shutil.which(_nvcc_exe())
             if which_nvcc:
                 return which_nvcc
             # Common fallbacks (ordered by preference)
-            for cand in [
-                "/usr/local/cuda-12.6/bin/nvcc",
-                "/usr/local/cuda/bin/nvcc",
-                "/usr/bin/nvcc",
-                "/usr/lib/nvidia-cuda-toolkit/bin/nvcc",
-            ]:
-                if Path(cand).exists():
-                    return cand
+            for prefix in _cuda_search_prefixes():
+                cand = Path(prefix) / "bin" / _nvcc_exe()
+                if cand.exists():
+                    return str(cand)
             return None
 
         # Note: We no longer set CMAKE_CUDA_ARCHITECTURES by default.
@@ -672,8 +710,12 @@ class CMakeBuild(build_ext):
         print("-- CMake build args:", " ".join(build_args))
         subprocess.run(["cmake", *build_args], cwd=build_temp, check=True)
 
-        # On some systems LTO + CMake + pybind may place the built .so inside build tree; move if needed
-        built_candidates = list(build_temp.rglob(f"{ext.name}*.so"))
+        # On some systems LTO + CMake + pybind may place the built extension inside build tree; move if needed
+        _ext_suffix = ".pyd" if sys.platform == "win32" else ".so"
+        built_candidates = list(build_temp.rglob(f"{ext.name}*{_ext_suffix}"))
+        if not built_candidates and sys.platform == "win32":
+            # MSVC may also produce .dll files for pybind11 modules
+            built_candidates = list(build_temp.rglob(f"{ext.name}*.dll"))
         for cand in built_candidates:
             if cand.parent != extdir:
                 target = extdir / cand.name
@@ -756,6 +798,7 @@ setup(
         "Programming Language :: Python :: 3",
         "Programming Language :: C++",
         "Operating System :: POSIX :: Linux",
+        "Operating System :: Microsoft :: Windows",
         "Operating System :: MacOS",
     ],
 )

@@ -54,7 +54,7 @@ class AMX_BF16_MOE_TP : public AMX_MOE_BASE<T, AMX_BF16_MOE_TP<T>> {
 
   void derived_init() {
     // BF16 has no quantization, no need to check quant_config
-    printf("Created AMX_BF16_MOE_TP %d at numa %d\n", tp_part_idx, numa_node_of_cpu(sched_getcpu()));
+    printf("Created AMX_BF16_MOE_TP %d at numa %d\n", tp_part_idx, hwloc_current_numa_node());
   }
 
   ~AMX_BF16_MOE_TP() = default;

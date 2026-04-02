@@ -9,9 +9,6 @@
  **/
 #include "task_queue.h"
 
-#include <pthread.h>
-#include <sched.h>
-
 #include <chrono>
 #include <iostream>
 #include <thread>

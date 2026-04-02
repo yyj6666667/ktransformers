@@ -119,7 +119,7 @@ class MOE_KERNEL_TP
   static constexpr double ELEMENT_SIZE = T::ELEMENT_SIZE;
 
   MOE_KERNEL_TP(GeneralMOEConfig config, int tp_part_idx) {
-    printf("  Creating AMD_MOE_TP %d at numa %d\n", tp_part_idx, numa_node_of_cpu(sched_getcpu()));
+    printf("  Creating AMD_MOE_TP %d at numa %d\n", tp_part_idx, hwloc_current_numa_node());
     auto& load = config.load;
     auto& save = config.save;
     if (load && config.path == "") {
@@ -172,7 +172,7 @@ class MOE_KERNEL_TP
     //        1e-9 * config_.expert_num *
     //            (T::BufferB::required_size(config_.intermediate_size, config_.hidden_size) * 2 +
     //             T::BufferB::required_size(config_.hidden_size, config_.intermediate_size)),
-    //        numa_node_of_cpu(sched_getcpu()));
+    //        hwloc_current_numa_node());
     // 统一分配一块巨大的内存用于权重：
     size_t gate_up_exp_size =
         T::BufferB::required_size(config_.intermediate_size, config_.hidden_size, PACKED, 'u', PLAIN) +

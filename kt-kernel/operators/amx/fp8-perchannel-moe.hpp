@@ -54,7 +54,7 @@ class AMX_FP8_PERCHANNEL_MOE_TP : public AMX_MOE_BASE<T, AMX_FP8_PERCHANNEL_MOE_
     if (!quant_config.per_channel) {
       throw std::runtime_error("KT-Kernel FP8 Per-Channel MoE requires per_channel=true");
     }
-    printf("Created AMX_FP8_PERCHANNEL_MOE_TP %d at numa %d\n", tp_part_idx, numa_node_of_cpu(sched_getcpu()));
+    printf("Created AMX_FP8_PERCHANNEL_MOE_TP %d at numa %d\n", tp_part_idx, hwloc_current_numa_node());
   }
 
   ~AMX_FP8_PERCHANNEL_MOE_TP() = default;

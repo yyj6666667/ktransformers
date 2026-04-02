@@ -399,7 +399,7 @@ class AMX_AWQ_MOE_TP : public AMX_MOE_BASE<T, AMX_AWQ_MOE_TP<T>> {
       throw std::runtime_error("AWQ-Quantization AMX MoE only support KGroup Int4_1");
     }
 
-    printf("Creating AMX_AWQ_MOE_TP %d at numa %d\n", tp_part_idx, numa_node_of_cpu(sched_getcpu()));
+    printf("Creating AMX_AWQ_MOE_TP %d at numa %d\n", tp_part_idx, hwloc_current_numa_node());
 
     auto& load = config_.load;
     auto& save = config_.save;

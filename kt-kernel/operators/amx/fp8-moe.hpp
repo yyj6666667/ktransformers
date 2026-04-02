@@ -55,7 +55,7 @@ class AMX_FP8_MOE_TP : public AMX_MOE_BASE<T, AMX_FP8_MOE_TP<T>> {
     if (quant_config.group_size == 0 || quant_config.zero_point) {
       throw std::runtime_error("KT-Kernel fp8 MoE only support block-wise FP8");
     }
-    printf("Created AMX_FP8_MOE_TP %d at numa %d\n", tp_part_idx, numa_node_of_cpu(sched_getcpu()));
+    printf("Created AMX_FP8_MOE_TP %d at numa %d\n", tp_part_idx, hwloc_current_numa_node());
   }
 
   ~AMX_FP8_MOE_TP() = default;

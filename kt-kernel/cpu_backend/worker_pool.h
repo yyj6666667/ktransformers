@@ -11,7 +11,6 @@
 #define CPUINFER_BACKEND_H
 
 #include <hwloc.h>
-#include <numa.h>
 
 #include <atomic>
 #include <barrier>
@@ -23,14 +22,11 @@
 #include <thread>
 #include <vector>
 
+#include "numa_compat.h"
+
 // #define PROFILE_BALANCE
 
-inline void set_to_numa(int this_numa) {
-  struct bitmask* mask = numa_bitmask_alloc(numa_num_configured_nodes());
-  numa_bitmask_setbit(mask, this_numa);
-  numa_bind(mask);
-  numa_bitmask_free(mask);
-}
+inline void set_to_numa(int this_numa) { hwloc_set_to_numa(this_numa); }
 
 inline void set_memory_to_numa(int this_numa) {
   // printf("Set memory to NUMA %d\n", this_numa);

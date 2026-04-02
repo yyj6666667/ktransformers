@@ -208,7 +208,7 @@ class TP_MOE_Common : public MoE_Interface {
         "forward time %ld, time stamp:%ld, band width %f GElement/s, ave bandwidth %f GElement/s (only "
         "decode), %f GFLOPS, me numa: %d\n",
         forward_time, end.time_since_epoch().count() / 1000 % 100000000, band_width, average_bandwidth, GFLOPS,
-        numa_node_of_cpu(sched_getcpu()));
+        hwloc_current_numa_node());
 #endif
   }
 
