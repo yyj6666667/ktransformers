@@ -365,6 +365,61 @@ def detect_cpu_info() -> CPUInfo:
             flags = features_output.lower().split()
             instruction_sets = _parse_cpu_flags(flags)
 
+    elif platform.system() == "Windows":
+        # CPU name: try WMI for a friendly name, fall back to platform.processor()
+        wmic_output = run_command(["wmic", "cpu", "get", "Name", "/value"])
+        if wmic_output:
+            for line in wmic_output.split("\n"):
+                if line.strip().startswith("Name="):
+                    name = line.strip().split("=", 1)[1].strip()
+                    break
+        if name == "Unknown":
+            proc = platform.processor()
+            if proc:
+                name = proc
+
+        # Physical vs logical cores via WMI
+        try:
+            cores_out = run_command(["wmic", "cpu", "get", "NumberOfCores", "/value"])
+            if cores_out:
+                for line in cores_out.split("\n"):
+                    if line.strip().startswith("NumberOfCores="):
+                        cores = int(line.strip().split("=", 1)[1])
+                        break
+            threads_out = run_command(["wmic", "cpu", "get", "NumberOfLogicalProcessors", "/value"])
+            if threads_out:
+                for line in threads_out.split("\n"):
+                    if line.strip().startswith("NumberOfLogicalProcessors="):
+                        threads = int(line.strip().split("=", 1)[1])
+                        break
+        except (ValueError, IndexError):
+            pass
+
+        # Instruction sets via kernel32.IsProcessorFeaturePresent (zero dependencies)
+        try:
+            import ctypes
+
+            _pf_map = {
+                6: "sse",
+                10: "sse2",
+                13: "sse3",
+                36: "ssse3",
+                37: "sse4_1",
+                38: "sse4_2",
+                39: "avx",
+                40: "avx2",
+                41: "avx512f",
+            }
+            kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+            detected_flags = []
+            for pf_id, flag_name in _pf_map.items():
+                if kernel32.IsProcessorFeaturePresent(pf_id):
+                    detected_flags.append(flag_name)
+            if detected_flags:
+                instruction_sets = _parse_cpu_flags(detected_flags)
+        except (OSError, AttributeError):
+            pass
+
     return CPUInfo(
         name=name,
         cores=cores,
