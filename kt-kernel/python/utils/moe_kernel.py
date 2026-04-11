@@ -3,6 +3,28 @@ import torch
 import ctypes
 from typing import List, Optional
 
+_libc = ctypes.CDLL("libc.so.6", use_errno=True)
+_MADV_WILLNEED = 3
+_PAGE_SIZE = 4096
+
+
+def _madvise_willneed(tensors):
+    """Async-prefetch mmap'd tensor pages via madvise(MADV_WILLNEED)."""
+    for t in tensors:
+        try:
+            if hasattr(t, "ctypes"):
+                addr, size = t.ctypes.data, t.nbytes
+            elif hasattr(t, "data_ptr"):
+                addr, size = t.data_ptr(), t.nbytes
+            else:
+                continue
+            if size == 0 or addr == 0:
+                continue
+            aligned = addr & ~(_PAGE_SIZE - 1)
+            _libc.madvise(ctypes.c_void_p(aligned), size + (addr - aligned), _MADV_WILLNEED)
+        except Exception:
+            pass
+
 # Use relative imports for package structure
 from ..experts_base import BaseMoEWrapper
 from .loader import SafeTensorLoader
@@ -180,18 +202,16 @@ class GeneralMoEWrapper(BaseMoEWrapper):
         self.cpu_infer.sync()
 
     def _do_io(self, physical_to_logical_map_cpu: torch.Tensor):
-        """Phase 1: Load tensors from disk/mmap and build the moe object."""
-        gate_ptr = 0
-        up_ptr = 0
-        down_ptr = 0
+        """Phase 1 (overlap-safe): load tensors, build ptr lists, async-prefetch pages.
 
-        gate_ptrs = []
-        up_ptrs = []
-        down_ptrs = []
-
-        gate_scale_ptrs = []
-        up_scale_ptrs = []
-        down_scale_ptrs = []
+        No C++ objects created — safe to run while previous layer's pack is active.
+        """
+        self._gate_ptrs = []
+        self._up_ptrs = []
+        self._down_ptrs = []
+        self._gate_scale_ptrs = []
+        self._up_scale_ptrs = []
+        self._down_scale_ptrs = []
 
         if self.load_merged_weight:
             base_key = f"blk.{self.layer_idx}"
@@ -204,56 +224,58 @@ class GeneralMoEWrapper(BaseMoEWrapper):
             self.up_scales = w["up_scale"]
             self.down_scales = w["down_scale"]
 
-            # Get pointers to weight arrays
-            gate_ptrs = [
-                [
-                    ctypes.addressof(ctypes.cast(et.ctypes.data, ctypes.POINTER(ctypes.c_uint64)).contents)
-                    for et in numa_array
-                ]
+            self._gate_ptrs = [
+                [ctypes.addressof(ctypes.cast(et.ctypes.data, ctypes.POINTER(ctypes.c_uint64)).contents)
+                 for et in numa_array]
                 for numa_array in self.gate_weights
             ]
-
-            up_ptrs = [
-                [
-                    ctypes.addressof(ctypes.cast(et.ctypes.data, ctypes.POINTER(ctypes.c_uint64)).contents)
-                    for et in numa_array
-                ]
+            self._up_ptrs = [
+                [ctypes.addressof(ctypes.cast(et.ctypes.data, ctypes.POINTER(ctypes.c_uint64)).contents)
+                 for et in numa_array]
                 for numa_array in self.up_weights
             ]
-
-            down_ptrs = [
-                [
-                    ctypes.addressof(ctypes.cast(et.ctypes.data, ctypes.POINTER(ctypes.c_uint64)).contents)
-                    for et in numa_array
-                ]
+            self._down_ptrs = [
+                [ctypes.addressof(ctypes.cast(et.ctypes.data, ctypes.POINTER(ctypes.c_uint64)).contents)
+                 for et in numa_array]
                 for numa_array in self.down_weights
             ]
-
-            gate_scale_ptrs = [
-                [
-                    ctypes.addressof(ctypes.cast(et.ctypes.data, ctypes.POINTER(ctypes.c_uint64)).contents)
-                    for et in numa_array
-                ]
+            self._gate_scale_ptrs = [
+                [ctypes.addressof(ctypes.cast(et.ctypes.data, ctypes.POINTER(ctypes.c_uint64)).contents)
+                 for et in numa_array]
                 for numa_array in self.gate_scales
             ]
-
-            up_scale_ptrs = [
-                [
-                    ctypes.addressof(ctypes.cast(et.ctypes.data, ctypes.POINTER(ctypes.c_uint64)).contents)
-                    for et in numa_array
-                ]
+            self._up_scale_ptrs = [
+                [ctypes.addressof(ctypes.cast(et.ctypes.data, ctypes.POINTER(ctypes.c_uint64)).contents)
+                 for et in numa_array]
                 for numa_array in self.up_scales
             ]
-
-            down_scale_ptrs = [
-                [
-                    ctypes.addressof(ctypes.cast(et.ctypes.data, ctypes.POINTER(ctypes.c_uint64)).contents)
-                    for et in numa_array
-                ]
+            self._down_scale_ptrs = [
+                [ctypes.addressof(ctypes.cast(et.ctypes.data, ctypes.POINTER(ctypes.c_uint64)).contents)
+                 for et in numa_array]
                 for numa_array in self.down_scales
             ]
 
-        # Configure MoE
+            flat = [t for numa in self.gate_weights + self.up_weights + self.down_weights
+                    for t in numa]
+            _madvise_willneed(flat)
+
+        if self.cpu_save:
+            base_key = f"model.layers.{self.layer_idx}"
+            w = self.safetensor_loader.load_experts(base_key)
+            self.gate_proj = torch.cat(w["gate_weight"], dim=0).contiguous()
+            self.up_proj = torch.cat(w["up_weight"], dim=0).contiguous()
+            self.down_proj = torch.cat(w["down_weight"], dim=0).contiguous()
+
+        self._pending_map = physical_to_logical_map_cpu
+
+    def _do_submit(self):
+        """Phase 2: Create C++ moe object and enqueue pack task.
+
+        Runs after previous layer's sync() — safe from thread-pool races.
+        submit() returns immediately; pack runs asynchronously on workers.
+        """
+        import time
+
         moe_config = MOEConfig(
             self.num_experts,
             self.num_experts_per_tok,
@@ -265,26 +287,19 @@ class GeneralMoEWrapper(BaseMoEWrapper):
         moe_config.pool = self.cpu_infer.backend_
         moe_config.max_len = self.chunked_prefill_size
 
-        moe_config.gate_proj = gate_ptr
-        moe_config.up_proj = up_ptr
-        moe_config.down_proj = down_ptr
-        moe_config.gate_projs = gate_ptrs
-        moe_config.up_projs = up_ptrs
-        moe_config.down_projs = down_ptrs
-        moe_config.gate_scales = gate_scale_ptrs
-        moe_config.up_scales = up_scale_ptrs
-        moe_config.down_scales = down_scale_ptrs
+        moe_config.gate_proj = 0
+        moe_config.up_proj = 0
+        moe_config.down_proj = 0
+        moe_config.gate_projs = self._gate_ptrs
+        moe_config.up_projs = self._up_ptrs
+        moe_config.down_projs = self._down_ptrs
+        moe_config.gate_scales = self._gate_scale_ptrs
+        moe_config.up_scales = self._up_scale_ptrs
+        moe_config.down_scales = self._down_scale_ptrs
 
         if self.cpu_save:
             moe_config.save = True
             moe_config.load = False
-            base_key = f"model.layers.{self.layer_idx}"
-            w = self.safetensor_loader.load_experts(base_key)
-
-            self.gate_proj = torch.cat(w["gate_weight"], dim=0).contiguous()
-            self.up_proj = torch.cat(w["up_weight"], dim=0).contiguous()
-            self.down_proj = torch.cat(w["down_weight"], dim=0).contiguous()
-
             moe_config.gate_proj = self.gate_proj.data_ptr()
             moe_config.up_proj = self.up_proj.data_ptr()
             moe_config.down_proj = self.down_proj.data_ptr()
@@ -294,7 +309,6 @@ class GeneralMoEWrapper(BaseMoEWrapper):
         if not self.load_merged_weight:
             moe_config.path = self.weight_path
 
-        # Create MoE module based on moe method
         if self.method == "MOE_INT4":
             self.moe = Int4_KERNEL_MOE(moe_config)
         elif self.method == "MOE_INT8":
@@ -302,16 +316,15 @@ class GeneralMoEWrapper(BaseMoEWrapper):
         else:
             raise NotImplementedError(f"Unsupported MoE method: {self.method}")
 
-        self._pending_map = physical_to_logical_map_cpu
-
-    def _do_submit(self):
-        """Phase 2: Enqueue the C++ pack task (returns immediately)."""
+        self._t4 = time.time()
         self.cpu_infer.submit(self.moe.load_weights_task(self._pending_map.data_ptr()))
 
     def _sync_and_cleanup(self):
         """Phase 3: Wait for C++ pack to finish and free temp tensors."""
         self.cpu_infer.sync()
         self._pending_map = None
+        self._gate_ptrs = self._up_ptrs = self._down_ptrs = None
+        self._gate_scale_ptrs = self._up_scale_ptrs = self._down_scale_ptrs = None
 
         if self.load_merged_weight:
             del self.gate_weights
