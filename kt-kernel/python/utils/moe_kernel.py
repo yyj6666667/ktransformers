@@ -180,7 +180,7 @@ class GeneralMoEWrapper(BaseMoEWrapper):
         self.cpu_infer.sync()
 
     def _do_io(self, physical_to_logical_map_cpu: torch.Tensor):
-        """Phase 1: Load tensors from disk/mmap and build the moe object."""
+        """Phase 1 (overlap-safe): only load tensors and prepare pointers."""
         gate_ptr = 0
         up_ptr = 0
         down_ptr = 0
@@ -253,7 +253,32 @@ class GeneralMoEWrapper(BaseMoEWrapper):
                 for numa_array in self.down_scales
             ]
 
-        # Configure MoE
+        if self.cpu_save:
+            base_key = f"model.layers.{self.layer_idx}"
+            w = self.safetensor_loader.load_experts(base_key)
+
+            self.gate_proj = torch.cat(w["gate_weight"], dim=0).contiguous()
+            self.up_proj = torch.cat(w["up_weight"], dim=0).contiguous()
+            self.down_proj = torch.cat(w["down_weight"], dim=0).contiguous()
+
+            gate_ptr = self.gate_proj.data_ptr()
+            up_ptr = self.up_proj.data_ptr()
+            down_ptr = self.down_proj.data_ptr()
+
+        self._pending_gate_ptr = gate_ptr
+        self._pending_up_ptr = up_ptr
+        self._pending_down_ptr = down_ptr
+        self._pending_gate_ptrs = gate_ptrs
+        self._pending_up_ptrs = up_ptrs
+        self._pending_down_ptrs = down_ptrs
+        self._pending_gate_scale_ptrs = gate_scale_ptrs
+        self._pending_up_scale_ptrs = up_scale_ptrs
+        self._pending_down_scale_ptrs = down_scale_ptrs
+
+        self._pending_map = physical_to_logical_map_cpu
+
+    def _do_submit(self):
+        """Phase 2: build C++ moe object and enqueue async C++ pack."""
         moe_config = MOEConfig(
             self.num_experts,
             self.num_experts_per_tok,
@@ -265,36 +290,25 @@ class GeneralMoEWrapper(BaseMoEWrapper):
         moe_config.pool = self.cpu_infer.backend_
         moe_config.max_len = self.chunked_prefill_size
 
-        moe_config.gate_proj = gate_ptr
-        moe_config.up_proj = up_ptr
-        moe_config.down_proj = down_ptr
-        moe_config.gate_projs = gate_ptrs
-        moe_config.up_projs = up_ptrs
-        moe_config.down_projs = down_ptrs
-        moe_config.gate_scales = gate_scale_ptrs
-        moe_config.up_scales = up_scale_ptrs
-        moe_config.down_scales = down_scale_ptrs
+        moe_config.gate_proj = self._pending_gate_ptr
+        moe_config.up_proj = self._pending_up_ptr
+        moe_config.down_proj = self._pending_down_ptr
+        moe_config.gate_projs = self._pending_gate_ptrs
+        moe_config.up_projs = self._pending_up_ptrs
+        moe_config.down_projs = self._pending_down_ptrs
+        moe_config.gate_scales = self._pending_gate_scale_ptrs
+        moe_config.up_scales = self._pending_up_scale_ptrs
+        moe_config.down_scales = self._pending_down_scale_ptrs
 
         if self.cpu_save:
             moe_config.save = True
             moe_config.load = False
-            base_key = f"model.layers.{self.layer_idx}"
-            w = self.safetensor_loader.load_experts(base_key)
-
-            self.gate_proj = torch.cat(w["gate_weight"], dim=0).contiguous()
-            self.up_proj = torch.cat(w["up_weight"], dim=0).contiguous()
-            self.down_proj = torch.cat(w["down_weight"], dim=0).contiguous()
-
-            moe_config.gate_proj = self.gate_proj.data_ptr()
-            moe_config.up_proj = self.up_proj.data_ptr()
-            moe_config.down_proj = self.down_proj.data_ptr()
         else:
             moe_config.load = True
 
         if not self.load_merged_weight:
             moe_config.path = self.weight_path
 
-        # Create MoE module based on moe method
         if self.method == "MOE_INT4":
             self.moe = Int4_KERNEL_MOE(moe_config)
         elif self.method == "MOE_INT8":
@@ -302,16 +316,21 @@ class GeneralMoEWrapper(BaseMoEWrapper):
         else:
             raise NotImplementedError(f"Unsupported MoE method: {self.method}")
 
-        self._pending_map = physical_to_logical_map_cpu
-
-    def _do_submit(self):
-        """Phase 2: Enqueue the C++ pack task (returns immediately)."""
         self.cpu_infer.submit(self.moe.load_weights_task(self._pending_map.data_ptr()))
 
     def _sync_and_cleanup(self):
         """Phase 3: Wait for C++ pack to finish and free temp tensors."""
         self.cpu_infer.sync()
         self._pending_map = None
+        self._pending_gate_ptr = 0
+        self._pending_up_ptr = 0
+        self._pending_down_ptr = 0
+        self._pending_gate_ptrs = []
+        self._pending_up_ptrs = []
+        self._pending_down_ptrs = []
+        self._pending_gate_scale_ptrs = []
+        self._pending_up_scale_ptrs = []
+        self._pending_down_scale_ptrs = []
 
         if self.load_merged_weight:
             del self.gate_weights
