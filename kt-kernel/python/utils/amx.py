@@ -192,18 +192,17 @@ class AMXMoEWrapper(BaseMoEWrapper):
         self.cpu_infer.sync()
 
     def _do_io(self, physical_to_logical_map_cpu: torch.Tensor):
-        """Phase 1: Load tensors from disk/mmap and build the moe object."""
-        gate_ptr = 0
-        up_ptr = 0
-        down_ptr = 0
+        """Phase 1 (overlap-safe): pure Python tensor loading and ptr-list construction.
 
-        gate_ptrs = []
-        up_ptrs = []
-        down_ptrs = []
-
-        gate_scale_ptrs = []
-        up_scale_ptrs = []
-        down_scale_ptrs = []
+        No C++ objects are created here, so this is safe to run while the
+        previous layer's C++ pack task is executing on the thread pool.
+        """
+        self._gate_ptrs = []
+        self._up_ptrs = []
+        self._down_ptrs = []
+        self._gate_scale_ptrs = []
+        self._up_scale_ptrs = []
+        self._down_scale_ptrs = []
 
         if self.load_merged_weight:
             base_key = f"blk.{self.layer_idx}"
@@ -216,47 +215,42 @@ class AMXMoEWrapper(BaseMoEWrapper):
             self.up_scales = w["up_scale"]
             self.down_scales = w["down_scale"]
 
-            gate_ptrs = [
+            self._gate_ptrs = [
                 [
                     ctypes.addressof(ctypes.cast(et.ctypes.data, ctypes.POINTER(ctypes.c_uint64)).contents)
                     for et in numa_array
                 ]
                 for numa_array in self.gate_weights
             ]
-
-            up_ptrs = [
+            self._up_ptrs = [
                 [
                     ctypes.addressof(ctypes.cast(et.ctypes.data, ctypes.POINTER(ctypes.c_uint64)).contents)
                     for et in numa_array
                 ]
                 for numa_array in self.up_weights
             ]
-
-            down_ptrs = [
+            self._down_ptrs = [
                 [
                     ctypes.addressof(ctypes.cast(et.ctypes.data, ctypes.POINTER(ctypes.c_uint64)).contents)
                     for et in numa_array
                 ]
                 for numa_array in self.down_weights
             ]
-
-            gate_scale_ptrs = [
+            self._gate_scale_ptrs = [
                 [
                     ctypes.addressof(ctypes.cast(et.ctypes.data, ctypes.POINTER(ctypes.c_uint64)).contents)
                     for et in numa_array
                 ]
                 for numa_array in self.gate_scales
             ]
-
-            up_scale_ptrs = [
+            self._up_scale_ptrs = [
                 [
                     ctypes.addressof(ctypes.cast(et.ctypes.data, ctypes.POINTER(ctypes.c_uint64)).contents)
                     for et in numa_array
                 ]
                 for numa_array in self.up_scales
             ]
-
-            down_scale_ptrs = [
+            self._down_scale_ptrs = [
                 [
                     ctypes.addressof(ctypes.cast(et.ctypes.data, ctypes.POINTER(ctypes.c_uint64)).contents)
                     for et in numa_array
@@ -264,7 +258,25 @@ class AMXMoEWrapper(BaseMoEWrapper):
                 for numa_array in self.down_scales
             ]
 
-        # Configure MoE
+        if self.cpu_save:
+            base_key = f"model.layers.{self.layer_idx}"
+            try:
+                w = self.safetensor_loader.load_experts(base_key)
+            except (ValueError, KeyError):
+                base_key = f"model.language_model.layers.{self.layer_idx}"
+                w = self.safetensor_loader.load_experts(base_key)
+            self.gate_proj = torch.cat(w["gate_weight"], dim=0).contiguous()
+            self.up_proj = torch.cat(w["up_weight"], dim=0).contiguous()
+            self.down_proj = torch.cat(w["down_weight"], dim=0).contiguous()
+
+        self._pending_map = physical_to_logical_map_cpu
+
+    def _do_submit(self):
+        """Phase 2: Create C++ moe object and enqueue the pack task.
+
+        Must run after the previous layer's sync() to avoid races with the
+        thread pool. submit() returns immediately — pack runs asynchronously.
+        """
         moe_config = MOEConfig(
             self.num_experts,
             self.num_experts_per_tok,
@@ -276,30 +288,19 @@ class AMXMoEWrapper(BaseMoEWrapper):
         moe_config.pool = self.cpu_infer.backend_
         moe_config.max_len = self.chunked_prefill_size
 
-        moe_config.gate_proj = gate_ptr
-        moe_config.up_proj = up_ptr
-        moe_config.down_proj = down_ptr
-        moe_config.gate_projs = gate_ptrs
-        moe_config.up_projs = up_ptrs
-        moe_config.down_projs = down_ptrs
-        moe_config.gate_scales = gate_scale_ptrs
-        moe_config.up_scales = up_scale_ptrs
-        moe_config.down_scales = down_scale_ptrs
+        moe_config.gate_proj = 0
+        moe_config.up_proj = 0
+        moe_config.down_proj = 0
+        moe_config.gate_projs = self._gate_ptrs
+        moe_config.up_projs = self._up_ptrs
+        moe_config.down_projs = self._down_ptrs
+        moe_config.gate_scales = self._gate_scale_ptrs
+        moe_config.up_scales = self._up_scale_ptrs
+        moe_config.down_scales = self._down_scale_ptrs
 
         if self.cpu_save:
             moe_config.save = True
             moe_config.load = False
-            base_key = f"model.layers.{self.layer_idx}"
-            try:
-                w = self.safetensor_loader.load_experts(base_key)
-            except (ValueError, KeyError):
-                base_key = f"model.language_model.layers.{self.layer_idx}"
-                w = self.safetensor_loader.load_experts(base_key)
-
-            self.gate_proj = torch.cat(w["gate_weight"], dim=0).contiguous()
-            self.up_proj = torch.cat(w["up_weight"], dim=0).contiguous()
-            self.down_proj = torch.cat(w["down_weight"], dim=0).contiguous()
-
             moe_config.gate_proj = self.gate_proj.data_ptr()
             moe_config.up_proj = self.up_proj.data_ptr()
             moe_config.down_proj = self.down_proj.data_ptr()
@@ -309,7 +310,6 @@ class AMXMoEWrapper(BaseMoEWrapper):
         if not self.load_merged_weight:
             moe_config.path = self.weight_path
 
-        # Create MoE module based on AMX method
         if self.method == "AMXINT4":
             self.moe = AMXInt4_MOE(moe_config)
         elif self.method == "AMXINT8":
@@ -317,16 +317,14 @@ class AMXMoEWrapper(BaseMoEWrapper):
         else:
             raise NotImplementedError(f"Unsupported AMX method: {self.method}")
 
-        self._pending_map = physical_to_logical_map_cpu
-
-    def _do_submit(self):
-        """Phase 2: Enqueue the C++ pack task (returns immediately)."""
         self.cpu_infer.submit(self.moe.load_weights_task(self._pending_map.data_ptr()))
 
     def _sync_and_cleanup(self):
         """Phase 3: Wait for C++ pack to finish and free temp tensors."""
         self.cpu_infer.sync()
         self._pending_map = None
+        self._gate_ptrs = self._up_ptrs = self._down_ptrs = None
+        self._gate_scale_ptrs = self._up_scale_ptrs = self._down_scale_ptrs = None
 
         if self.load_merged_weight:
             del self.gate_weights
@@ -449,10 +447,11 @@ class NativeMoEWrapper(BaseMoEWrapper):
         raise NotImplementedError("RAWINT4 wrapper expects pre-quantized safetensor weights.")
 
     def _do_io(self, physical_to_logical_map_cpu: torch.Tensor):
-        """Phase 1: Load tensors from disk/mmap and build the moe object.
+        """Phase 1 (overlap-safe): pure Python tensor loading and ptr-list construction.
 
-        Stores results in instance variables so that _do_submit() can fire
-        the C++ enqueue while the *next* layer's _do_io() runs concurrently.
+        No C++ objects are created here, so this is safe to run while the
+        previous layer's C++ pack task is executing on the thread pool.
+        Results are stored in instance variables for _do_submit() to consume.
         """
         import time
 
@@ -466,13 +465,10 @@ class NativeMoEWrapper(BaseMoEWrapper):
             weights = self.loader.load_experts(base_key)
         self._t1 = time.time()
 
-        # Keep individual tensors instead of stacking - avoid expensive memory copy
-        # weights["gate"], weights["up"], weights["down"] are lists of tensors per expert
-        self.gate_weights = weights["gate"]  # list of tensors
+        self.gate_weights = weights["gate"]
         self.up_weights = weights["up"]
         self.down_weights = weights["down"]
 
-        # BF16 has no scales, others have scales
         if self.method == "BF16":
             self.gate_scales = None
             self.up_scales = None
@@ -500,19 +496,30 @@ class NativeMoEWrapper(BaseMoEWrapper):
 
         # Build pointer lists: [numa_id][expert_id] -> pointer
         # Since RAWINT4/FP8/BF16 has no numa sharding, numa dimension is 1
-        gate_ptrs = [[t.data_ptr() for t in self.gate_weights]]
-        up_ptrs = [[t.data_ptr() for t in self.up_weights]]
-        down_ptrs = [[t.data_ptr() for t in self.down_weights]]
+        self._gate_ptrs = [[t.data_ptr() for t in self.gate_weights]]
+        self._up_ptrs = [[t.data_ptr() for t in self.up_weights]]
+        self._down_ptrs = [[t.data_ptr() for t in self.down_weights]]
 
         if self.method == "BF16":
-            gate_scale_ptrs = [[0 for _ in self.gate_weights]]
-            up_scale_ptrs = [[0 for _ in self.up_weights]]
-            down_scale_ptrs = [[0 for _ in self.down_weights]]
+            self._gate_scale_ptrs = [[0 for _ in self.gate_weights]]
+            self._up_scale_ptrs = [[0 for _ in self.up_weights]]
+            self._down_scale_ptrs = [[0 for _ in self.down_weights]]
         else:
-            gate_scale_ptrs = [[t.data_ptr() for t in self.gate_scales]]
-            up_scale_ptrs = [[t.data_ptr() for t in self.up_scales]]
-            down_scale_ptrs = [[t.data_ptr() for t in self.down_scales]]
+            self._gate_scale_ptrs = [[t.data_ptr() for t in self.gate_scales]]
+            self._up_scale_ptrs = [[t.data_ptr() for t in self.up_scales]]
+            self._down_scale_ptrs = [[t.data_ptr() for t in self.down_scales]]
+
         self._t3 = time.time()
+        self._pending_map = physical_to_logical_map_cpu
+
+    def _do_submit(self):
+        """Phase 2: Create the C++ moe object and enqueue the pack task.
+
+        C++ object construction and submit() must run after the previous layer's
+        sync() to avoid races with the thread pool.  submit() itself returns
+        immediately — the pack work runs asynchronously on worker threads.
+        """
+        import time
 
         moe_config = MOEConfig(
             self.num_experts,
@@ -525,12 +532,12 @@ class NativeMoEWrapper(BaseMoEWrapper):
         moe_config.pool = self.cpu_infer.backend_
         moe_config.max_len = self.chunked_prefill_size
 
-        moe_config.gate_projs = gate_ptrs
-        moe_config.up_projs = up_ptrs
-        moe_config.down_projs = down_ptrs
-        moe_config.gate_scales = gate_scale_ptrs
-        moe_config.up_scales = up_scale_ptrs
-        moe_config.down_scales = down_scale_ptrs
+        moe_config.gate_projs = self._gate_ptrs
+        moe_config.up_projs = self._up_ptrs
+        moe_config.down_projs = self._down_ptrs
+        moe_config.gate_scales = self._gate_scale_ptrs
+        moe_config.up_scales = self._up_scale_ptrs
+        moe_config.down_scales = self._down_scale_ptrs
 
         if self.method == "RAWINT4":
             group_size = self.hidden_size // self.gate_scales[0].shape[1]
@@ -563,19 +570,8 @@ class NativeMoEWrapper(BaseMoEWrapper):
                 self.moe = AMXBF16_MOE(moe_config)
             else:
                 self.moe = AVX2BF16_MOE(moe_config)
+
         self._t4 = time.time()
-
-        # Save map so _do_submit can reference it after _do_io returns
-        self._pending_map = physical_to_logical_map_cpu
-
-    def _do_submit(self):
-        """Phase 2: Enqueue the C++ pack task into the async thread pool.
-
-        submit() is synchronous on the Python thread (calls inner() directly),
-        but inner() only calls enqueue(), so the actual C++ work runs
-        asynchronously.  This returns immediately, letting the caller start
-        the next layer's _do_io() while the C++ pack runs in the background.
-        """
         self.cpu_infer.submit(self.moe.load_weights_task(self._pending_map.data_ptr()))
 
     def _sync_and_cleanup(self):
@@ -593,6 +589,8 @@ class NativeMoEWrapper(BaseMoEWrapper):
             del self.up_scales
             del self.down_scales
         self._pending_map = None
+        self._gate_ptrs = self._up_ptrs = self._down_ptrs = None
+        self._gate_scale_ptrs = self._up_scale_ptrs = self._down_scale_ptrs = None
         t6 = time.time()
 
         print(
