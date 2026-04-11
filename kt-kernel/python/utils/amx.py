@@ -191,13 +191,8 @@ class AMXMoEWrapper(BaseMoEWrapper):
         self.cpu_infer.submit(self.moe.load_weights_task(physical_to_logical_map_cpu.data_ptr()))
         self.cpu_infer.sync()
 
-    def load_weights(self, physical_to_logical_map_cpu: torch.Tensor):
-        """
-        Load weights for this layer and initialize the MoE module.
-
-        Args:
-            physical_to_logical_map_cpu: Mapping from physical to logical expert IDs
-        """
+    def _do_io(self, physical_to_logical_map_cpu: torch.Tensor):
+        """Phase 1: Load tensors from disk/mmap and build the moe object."""
         gate_ptr = 0
         up_ptr = 0
         down_ptr = 0
@@ -221,7 +216,6 @@ class AMXMoEWrapper(BaseMoEWrapper):
             self.up_scales = w["up_scale"]
             self.down_scales = w["down_scale"]
 
-            # Get pointers to weight arrays
             gate_ptrs = [
                 [
                     ctypes.addressof(ctypes.cast(et.ctypes.data, ctypes.POINTER(ctypes.c_uint64)).contents)
@@ -323,11 +317,17 @@ class AMXMoEWrapper(BaseMoEWrapper):
         else:
             raise NotImplementedError(f"Unsupported AMX method: {self.method}")
 
-        # Load weights
-        self.cpu_infer.submit(self.moe.load_weights_task(physical_to_logical_map_cpu.data_ptr()))
-        self.cpu_infer.sync()
+        self._pending_map = physical_to_logical_map_cpu
 
-        # Clean up temporary weight storage if using merged weights
+    def _do_submit(self):
+        """Phase 2: Enqueue the C++ pack task (returns immediately)."""
+        self.cpu_infer.submit(self.moe.load_weights_task(self._pending_map.data_ptr()))
+
+    def _sync_and_cleanup(self):
+        """Phase 3: Wait for C++ pack to finish and free temp tensors."""
+        self.cpu_infer.sync()
+        self._pending_map = None
+
         if self.load_merged_weight:
             del self.gate_weights
             del self.up_weights
@@ -335,6 +335,17 @@ class AMXMoEWrapper(BaseMoEWrapper):
             del self.gate_scales
             del self.up_scales
             del self.down_scales
+
+    def load_weights(self, physical_to_logical_map_cpu: torch.Tensor):
+        """
+        Load weights for this layer and initialize the MoE module.
+
+        Args:
+            physical_to_logical_map_cpu: Mapping from physical to logical expert IDs
+        """
+        self._do_io(physical_to_logical_map_cpu)
+        self._do_submit()
+        self._sync_and_cleanup()
 
 
 class NativeMoEWrapper(BaseMoEWrapper):
@@ -437,10 +448,15 @@ class NativeMoEWrapper(BaseMoEWrapper):
     ):
         raise NotImplementedError("RAWINT4 wrapper expects pre-quantized safetensor weights.")
 
-    def load_weights(self, physical_to_logical_map_cpu: torch.Tensor):
+    def _do_io(self, physical_to_logical_map_cpu: torch.Tensor):
+        """Phase 1: Load tensors from disk/mmap and build the moe object.
+
+        Stores results in instance variables so that _do_submit() can fire
+        the C++ enqueue while the *next* layer's _do_io() runs concurrently.
+        """
         import time
 
-        t0 = time.time()
+        self._t0 = time.time()
         base_key = f"model.layers.{self.layer_idx}"
         try:
             weights = self.loader.load_experts(base_key)
@@ -448,7 +464,7 @@ class NativeMoEWrapper(BaseMoEWrapper):
             # For VL/multimodal models (e.g. Qwen3.5) with 'language_model' prefix
             base_key = f"model.language_model.layers.{self.layer_idx}"
             weights = self.loader.load_experts(base_key)
-        t1 = time.time()
+        self._t1 = time.time()
 
         # Keep individual tensors instead of stacking - avoid expensive memory copy
         # weights["gate"], weights["up"], weights["down"] are lists of tensors per expert
@@ -458,15 +474,10 @@ class NativeMoEWrapper(BaseMoEWrapper):
 
         # BF16 has no scales, others have scales
         if self.method == "BF16":
-            # BF16 doesn't have scales
             self.gate_scales = None
             self.up_scales = None
             self.down_scales = None
         else:
-            # Convert scales to bf16 individually
-            # self.gate_scales = [t.to(torch.bfloat16).contiguous() for t in weights["gate_scale"]]
-            # self.up_scales = [t.to(torch.bfloat16).contiguous() for t in weights["up_scale"]]
-            # self.down_scales = [t.to(torch.bfloat16).contiguous() for t in weights["down_scale"]]
             self.gate_scales = weights["gate_scale"]
             self.up_scales = weights["up_scale"]
             self.down_scales = weights["down_scale"]
@@ -485,7 +496,7 @@ class NativeMoEWrapper(BaseMoEWrapper):
                     self.down_scales = [t.to(torch.float32).contiguous() for t in weights["down_scale"]]
                 assert self.gate_scales[0].dtype == torch.float32, "Expected float32 scales for FP8_PERCHANNEL"
 
-        t2 = time.time()
+        self._t2 = time.time()
 
         # Build pointer lists: [numa_id][expert_id] -> pointer
         # Since RAWINT4/FP8/BF16 has no numa sharding, numa dimension is 1
@@ -493,7 +504,6 @@ class NativeMoEWrapper(BaseMoEWrapper):
         up_ptrs = [[t.data_ptr() for t in self.up_weights]]
         down_ptrs = [[t.data_ptr() for t in self.down_weights]]
 
-        # BF16 has no scales, pass empty lists (will use 0/nullptr for consistency)
         if self.method == "BF16":
             gate_scale_ptrs = [[0 for _ in self.gate_weights]]
             up_scale_ptrs = [[0 for _ in self.up_weights]]
@@ -502,7 +512,7 @@ class NativeMoEWrapper(BaseMoEWrapper):
             gate_scale_ptrs = [[t.data_ptr() for t in self.gate_scales]]
             up_scale_ptrs = [[t.data_ptr() for t in self.up_scales]]
             down_scale_ptrs = [[t.data_ptr() for t in self.down_scales]]
-        t3 = time.time()
+        self._t3 = time.time()
 
         moe_config = MOEConfig(
             self.num_experts,
@@ -515,17 +525,12 @@ class NativeMoEWrapper(BaseMoEWrapper):
         moe_config.pool = self.cpu_infer.backend_
         moe_config.max_len = self.chunked_prefill_size
 
-        # Use gate_projs instead of gate_proj for per-expert pointers
         moe_config.gate_projs = gate_ptrs
         moe_config.up_projs = up_ptrs
         moe_config.down_projs = down_ptrs
         moe_config.gate_scales = gate_scale_ptrs
         moe_config.up_scales = up_scale_ptrs
         moe_config.down_scales = down_scale_ptrs
-
-        # Infer group_size from scale shape (column-major layout)
-        # For gate/up projection: in_features = hidden_size
-        # So: group_size = hidden_size / scale.shape[1]
 
         if self.method == "RAWINT4":
             group_size = self.hidden_size // self.gate_scales[0].shape[1]
@@ -547,26 +552,38 @@ class NativeMoEWrapper(BaseMoEWrapper):
             moe_config.quant_config.zero_point = False
             self.moe = AMXFP8PerChannel_MOE(moe_config)
         elif self.method == "GPTQ_INT4":
-            # GPTQ symmetric INT4: qweight (int32) + scales (fp32)
-            group_size = self.gate_scales[0].shape[0]  # scales shape [K/gs, N], first dim = num_groups
-            # hidden_size / num_groups = group_size
+            group_size = self.gate_scales[0].shape[0]
             actual_gs = self.hidden_size // group_size
             moe_config.quant_config.bits = 4
             moe_config.quant_config.group_size = actual_gs
             moe_config.quant_config.zero_point = False
             self.moe = AVX2GPTQInt4_MOE(moe_config)
         elif self.method == "BF16":
-            # BF16 has no quantization config needed
-            # Prefer AMX backend, fall back to AVX2
             if _HAS_BF16_SUPPORT:
                 self.moe = AMXBF16_MOE(moe_config)
             else:
                 self.moe = AVX2BF16_MOE(moe_config)
-        t4 = time.time()
+        self._t4 = time.time()
 
-        self.cpu_infer.submit(self.moe.load_weights_task(physical_to_logical_map_cpu.data_ptr()))
+        # Save map so _do_submit can reference it after _do_io returns
+        self._pending_map = physical_to_logical_map_cpu
+
+    def _do_submit(self):
+        """Phase 2: Enqueue the C++ pack task into the async thread pool.
+
+        submit() is synchronous on the Python thread (calls inner() directly),
+        but inner() only calls enqueue(), so the actual C++ work runs
+        asynchronously.  This returns immediately, letting the caller start
+        the next layer's _do_io() while the C++ pack runs in the background.
+        """
+        self.cpu_infer.submit(self.moe.load_weights_task(self._pending_map.data_ptr()))
+
+    def _sync_and_cleanup(self):
+        """Phase 3: Wait for the C++ pack task to finish and free temp tensors."""
+        import time
+
         self.cpu_infer.sync()
-        t5 = time.time()
+        self._t5 = time.time()
 
         del self.gate_weights
         del self.up_weights
@@ -575,18 +592,24 @@ class NativeMoEWrapper(BaseMoEWrapper):
             del self.gate_scales
             del self.up_scales
             del self.down_scales
+        self._pending_map = None
         t6 = time.time()
 
         print(
             f"[NativeMoEWrapper Layer {self.layer_idx}] "
-            f"load_experts: {(t1-t0)*1000:.1f}ms, "
-            f"prepare_tensors: {(t2-t1)*1000:.1f}ms, "
-            f"build_ptrs: {(t3-t2)*1000:.1f}ms, "
-            f"create_moe: {(t4-t3)*1000:.1f}ms, "
-            f"cpp_load_weights: {(t5-t4)*1000:.1f}ms, "
-            f"cleanup: {(t6-t5)*1000:.1f}ms, "
-            f"total: {(t6-t0)*1000:.1f}ms"
+            f"load_experts: {(self._t1-self._t0)*1000:.1f}ms, "
+            f"prepare_tensors: {(self._t2-self._t1)*1000:.1f}ms, "
+            f"build_ptrs: {(self._t3-self._t2)*1000:.1f}ms, "
+            f"create_moe: {(self._t4-self._t3)*1000:.1f}ms, "
+            f"cpp_load_weights: {(self._t5-self._t4)*1000:.1f}ms, "
+            f"cleanup: {(t6-self._t5)*1000:.1f}ms, "
+            f"total: {(t6-self._t0)*1000:.1f}ms"
         )
+
+    def load_weights(self, physical_to_logical_map_cpu: torch.Tensor):
+        self._do_io(physical_to_logical_map_cpu)
+        self._do_submit()
+        self._sync_and_cleanup()
 
     def submit_write_weight_scale_to_buffer(
         self,

@@ -179,13 +179,8 @@ class GeneralMoEWrapper(BaseMoEWrapper):
         self.cpu_infer.submit(self.moe.load_weights_task(physical_to_logical_map_cpu.data_ptr()))
         self.cpu_infer.sync()
 
-    def load_weights(self, physical_to_logical_map_cpu: torch.Tensor):
-        """
-        Load weights for this layer and initialize the MoE module.
-
-        Args:
-            physical_to_logical_map_cpu: Mapping from physical to logical expert IDs
-        """
+    def _do_io(self, physical_to_logical_map_cpu: torch.Tensor):
+        """Phase 1: Load tensors from disk/mmap and build the moe object."""
         gate_ptr = 0
         up_ptr = 0
         down_ptr = 0
@@ -307,11 +302,17 @@ class GeneralMoEWrapper(BaseMoEWrapper):
         else:
             raise NotImplementedError(f"Unsupported MoE method: {self.method}")
 
-        # Load weights
-        self.cpu_infer.submit(self.moe.load_weights_task(physical_to_logical_map_cpu.data_ptr()))
-        self.cpu_infer.sync()
+        self._pending_map = physical_to_logical_map_cpu
 
-        # Clean up temporary weight storage if using merged weights
+    def _do_submit(self):
+        """Phase 2: Enqueue the C++ pack task (returns immediately)."""
+        self.cpu_infer.submit(self.moe.load_weights_task(self._pending_map.data_ptr()))
+
+    def _sync_and_cleanup(self):
+        """Phase 3: Wait for C++ pack to finish and free temp tensors."""
+        self.cpu_infer.sync()
+        self._pending_map = None
+
         if self.load_merged_weight:
             del self.gate_weights
             del self.up_weights
@@ -319,3 +320,14 @@ class GeneralMoEWrapper(BaseMoEWrapper):
             del self.gate_scales
             del self.up_scales
             del self.down_scales
+
+    def load_weights(self, physical_to_logical_map_cpu: torch.Tensor):
+        """
+        Load weights for this layer and initialize the MoE module.
+
+        Args:
+            physical_to_logical_map_cpu: Mapping from physical to logical expert IDs
+        """
+        self._do_io(physical_to_logical_map_cpu)
+        self._do_submit()
+        self._sync_and_cleanup()
