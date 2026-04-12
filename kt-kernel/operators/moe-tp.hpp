@@ -119,7 +119,14 @@ class TP_MOE_Common : public MoE_Interface {
       }
     }
 
-    config.pool->dispense_backend()->do_numa_job(
+    // Use dispense_init_backend() — a dedicated NumaJobDistributor with its own
+    // NUMA master threads — so this constructor's do_numa_job (memory alloc per
+    // NUMA node) can run concurrently with the pack phase's do_numa_job
+    // (load_weights via dispense_backend()).  The two distributors have
+    // completely disjoint thread sets, so there is no shared mutable state
+    // between create_moe and pack: no race on compute_func, status[], or
+    // the NUMA worker threads themselves.
+    config.pool->dispense_init_backend()->do_numa_job(
         [this, config](int i) { tps[i] = std::move(std::unique_ptr<T>(new T(tp_configs[i], i))); });
 
     local_output_numa.resize(tp_count, nullptr);

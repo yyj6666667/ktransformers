@@ -110,8 +110,12 @@ class NumaJobDistributor {
 
   ~NumaJobDistributor();
 
-  // Thread-safe: serialises concurrent callers so that compute_func and
-  // worker-status are never accessed by two dispatchers simultaneously.
+  // NOT thread-safe for concurrent callers on the same instance.
+  // Each NumaJobDistributor owns a dedicated set of NUMA master threads;
+  // correctness requires that only one caller drives a given instance at a time.
+  // Use WorkerPool::dispense_init_backend() for constructor-time init work
+  // and WorkerPool::dispense_backend() for pack/forward work so the two
+  // never share the same instance.
   void do_numa_job(std::function<void(int)>);
 
  private:
@@ -127,11 +131,6 @@ class NumaJobDistributor {
   std::vector<std::unique_ptr<std::condition_variable>> cvs;
   std::function<void(int)> compute_func;
   std::vector<std::thread> workers;
-
-  // Guards compute_func and the status/cv dispatch sequence.
-  // Held for the full duration of do_numa_job (including the spin-wait for
-  // workers), so that a second caller blocks until the first job completes.
-  std::mutex dispatch_mutex_;
 
   void worker_thread(int);
 };
@@ -153,7 +152,14 @@ class WorkerPool {
 
   static thread_local int thread_local_id;
 
+  // For pack / forward inference: the primary distributor, driven by the
+  // TaskQueue worker thread (sequential, one job at a time).
   NumaJobDistributor* dispense_backend();
+
+  // For TP_MOE_Common constructor init: a separate distributor with its own
+  // NUMA master threads so that create_moe and pack can run concurrently
+  // without sharing any NumaJobDistributor state.
+  NumaJobDistributor* dispense_init_backend();
 
   InNumaPool* get_subpool(int numa_id);
 
@@ -168,7 +174,15 @@ class WorkerPool {
   int total_thread_count;
   int numa_count;
   int threads_per_numa;
+
+  // Primary distributor: pack / forward.  Driven exclusively by the TaskQueue
+  // worker thread — never called concurrently with itself.
   std::unique_ptr<NumaJobDistributor> distributor;
+
+  // Init distributor: TP_MOE_Common constructor.  Driven exclusively by the
+  // Python main thread (GIL ensures sequential calls).  Separate thread set
+  // from `distributor`, so create_moe and pack can overlap without races.
+  std::unique_ptr<NumaJobDistributor> init_distributor;
 
   std::vector<std::unique_ptr<InNumaPool>> numa_worker_pools;
 };

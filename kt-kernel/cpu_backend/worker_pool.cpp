@@ -346,12 +346,6 @@ NumaJobDistributor::~NumaJobDistributor() {
 #ifdef USE_NUMA_JOB_DIRECT_WORK
 
 void NumaJobDistributor::do_numa_job(std::function<void(int)> compute_func) {
-  // dispatch_mutex_ serialises concurrent callers (e.g. Python main thread
-  // constructing a TP_MOE object vs. TaskQueue worker running load_weights).
-  // The lock is held through the spin-wait so the second caller only proceeds
-  // after all NUMA workers have finished the first job, establishing a clean
-  // happens-before edge on compute_func and worker status.
-  std::lock_guard<std::mutex> guard(dispatch_mutex_);
   this->compute_func = compute_func;
   auto me_numa = numa_node_of_cpu(sched_getcpu());
   for (int i = 0; i < numa_count; i++) {
@@ -373,12 +367,6 @@ void NumaJobDistributor::do_numa_job(std::function<void(int)> compute_func) {
 }
 #else
 void NumaJobDistributor::do_numa_job(std::function<void(int)> compute_func) {
-  // dispatch_mutex_ serialises concurrent callers (e.g. Python main thread
-  // constructing a TP_MOE object vs. TaskQueue worker running load_weights).
-  // The lock is held through the spin-wait so the second caller only proceeds
-  // after all NUMA workers have finished the first job, establishing a clean
-  // happens-before edge on compute_func and worker status.
-  std::lock_guard<std::mutex> guard(dispatch_mutex_);
   this->compute_func = compute_func;
   for (int i = 0; i < numa_count; i++) {
     {
@@ -447,9 +435,20 @@ void WorkerPool::init(WorkerPoolConfig config) {
     numa_threads_count[this_numa] += this_thread_count;
   }
 
+  // Primary distributor: owned by pack / forward.  Uses pinned threads
+  // (thread_count-based constructor) for cache-warm dispatch.
   distributor = std::move(std::unique_ptr<NumaJobDistributor>(
       new NumaJobDistributor(config.subpool_numa_map, config.subpool_thread_count)));
-  // distributor = std::move(std::unique_ptr<NumaJobDistributor>(new NumaJobDistributor(config.subpool_numa_map)));
+
+  // Init distributor: owned by TP_MOE_Common constructor (create_moe phase).
+  // Uses the simpler constructor — NUMA memory-affinity without strict CPU
+  // pinning — so these master threads do not compete for the same physical
+  // cores that `distributor` is pinned to.
+  // Having two independent thread sets means create_moe (Python main thread
+  // driving init_distributor) and pack (TaskQueue worker driving distributor)
+  // can run truly concurrently without sharing any NumaJobDistributor state.
+  init_distributor = std::move(std::unique_ptr<NumaJobDistributor>(
+      new NumaJobDistributor(config.subpool_numa_map)));
 }
 
 WorkerPool::WorkerPool(WorkerPoolConfig config) : config(config) { init(config); }
@@ -490,6 +489,8 @@ void WorkerPool::set_restricted_worker_count(int count) {
 InNumaPool* WorkerPool::get_subpool(int numa_id) { return numa_worker_pools[numa_id].get(); }
 
 NumaJobDistributor* WorkerPool::dispense_backend() { return distributor.get(); }
+
+NumaJobDistributor* WorkerPool::dispense_init_backend() { return init_distributor.get(); }
 
 void WorkerPool::do_work_stealing_job(int task_num, std::function<void(int)> init_func,
                                       std::function<void(int)> compute_func, std::function<void(int)> finalize_func) {
