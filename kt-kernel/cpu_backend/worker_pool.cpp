@@ -346,6 +346,12 @@ NumaJobDistributor::~NumaJobDistributor() {
 #ifdef USE_NUMA_JOB_DIRECT_WORK
 
 void NumaJobDistributor::do_numa_job(std::function<void(int)> compute_func) {
+  // dispatch_mutex_ serialises concurrent callers (e.g. Python main thread
+  // constructing a TP_MOE object vs. TaskQueue worker running load_weights).
+  // The lock is held through the spin-wait so the second caller only proceeds
+  // after all NUMA workers have finished the first job, establishing a clean
+  // happens-before edge on compute_func and worker status.
+  std::lock_guard<std::mutex> guard(dispatch_mutex_);
   this->compute_func = compute_func;
   auto me_numa = numa_node_of_cpu(sched_getcpu());
   for (int i = 0; i < numa_count; i++) {
@@ -367,6 +373,12 @@ void NumaJobDistributor::do_numa_job(std::function<void(int)> compute_func) {
 }
 #else
 void NumaJobDistributor::do_numa_job(std::function<void(int)> compute_func) {
+  // dispatch_mutex_ serialises concurrent callers (e.g. Python main thread
+  // constructing a TP_MOE object vs. TaskQueue worker running load_weights).
+  // The lock is held through the spin-wait so the second caller only proceeds
+  // after all NUMA workers have finished the first job, establishing a clean
+  // happens-before edge on compute_func and worker status.
+  std::lock_guard<std::mutex> guard(dispatch_mutex_);
   this->compute_func = compute_func;
   for (int i = 0; i < numa_count; i++) {
     {

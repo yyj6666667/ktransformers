@@ -110,6 +110,8 @@ class NumaJobDistributor {
 
   ~NumaJobDistributor();
 
+  // Thread-safe: serialises concurrent callers so that compute_func and
+  // worker-status are never accessed by two dispatchers simultaneously.
   void do_numa_job(std::function<void(int)>);
 
  private:
@@ -125,6 +127,11 @@ class NumaJobDistributor {
   std::vector<std::unique_ptr<std::condition_variable>> cvs;
   std::function<void(int)> compute_func;
   std::vector<std::thread> workers;
+
+  // Guards compute_func and the status/cv dispatch sequence.
+  // Held for the full duration of do_numa_job (including the spin-wait for
+  // workers), so that a second caller blocks until the first job completes.
+  std::mutex dispatch_mutex_;
 
   void worker_thread(int);
 };
