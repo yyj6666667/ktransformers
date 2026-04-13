@@ -692,12 +692,14 @@ class TP_MOE<AMX_FP8_MOE_TP<K>> : public TP_MOE<AMX_MOE_BASE<K, AMX_FP8_MOE_TP<K
       tpc.down_scale = new float  [tpc.expert_num * tp_scale_elems];
     });
 
-    // ── Step 2: per-expert I/O-ready flags (one vector per NUMA TP) ─────────────
+    // ── Step 2: per-expert I/O-ready flags (one array per NUMA TP) ──────────────
+    // std::atomic is not copyable, so use unique_ptr<IOFlag[]> instead of vector.
     using IOFlag = typename AMX_FP8_MOE_TP<K>::IOFlag;
-    std::vector<std::vector<IOFlag>> io_flags_vec(tp_count);
+    std::vector<std::unique_ptr<IOFlag[]>> io_flags_arr(tp_count);
     for (int i = 0; i < tp_count; i++) {
-      io_flags_vec[i].resize(tps[i]->config_.expert_num);
-      tps[i]->io_flags = io_flags_vec[i].data();
+      io_flags_arr[i].reset(new IOFlag[tps[i]->config_.expert_num]);
+      // tps[i] static type is AMX_MOE_BASE; cast to derived to reach io_flags.
+      static_cast<AMX_FP8_MOE_TP<K>*>(tps[i].get())->io_flags = io_flags_arr[i].get();
     }
 
     // ── Step 3: launch one I/O thread per NUMA TP ───────────────────────────────
@@ -767,7 +769,7 @@ class TP_MOE<AMX_FP8_MOE_TP<K>> : public TP_MOE<AMX_MOE_BASE<K, AMX_FP8_MOE_TP<K
           }
 
           // Signal that staging data for expert eid_ is complete.
-          io_flags_vec[i][eid_].v.store(true, std::memory_order_release);
+          io_flags_arr[i][eid_].v.store(true, std::memory_order_release);
         }
       });
     }
@@ -781,7 +783,8 @@ class TP_MOE<AMX_FP8_MOE_TP<K>> : public TP_MOE<AMX_MOE_BASE<K, AMX_FP8_MOE_TP<K
     for (auto& t : io_threads) t.join();
 
     // ── Step 6: clear flag pointers and free staging buffers ────────────────────
-    for (int i = 0; i < tp_count; i++) tps[i]->io_flags = nullptr;
+    for (int i = 0; i < tp_count; i++)
+      static_cast<AMX_FP8_MOE_TP<K>*>(tps[i].get())->io_flags = nullptr;
 
     pool->dispense_backend()->do_numa_job([&, this](int i) {
       auto& tpc = tps[i]->config_;
