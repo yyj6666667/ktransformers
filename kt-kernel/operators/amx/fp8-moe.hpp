@@ -16,6 +16,7 @@
 #include "la/amx_raw_buffers.hpp"
 #include "la/amx_raw_kernels.hpp"
 #include "moe_base.hpp"
+#include <sys/mman.h>
 
 /**
  * @brief FP8 MoE operator using CRTP pattern
@@ -666,79 +667,155 @@ class TP_MOE<AMX_FP8_MOE_TP<K>> : public TP_MOE<AMX_MOE_BASE<K, AMX_FP8_MOE_TP<K
       tpc.up_scale = new float[tpc.expert_num * tp_scale_elems];
       tpc.down_scale = new float[tpc.expert_num * tp_scale_elems];
 
-      const size_t tp_idx = (size_t)i;
       const size_t gate_up_weight_src_offset = i * tp_weight_elems;
       const size_t gate_up_scale_src_offset = i * tp_scale_elems;
 
       const size_t down_weight_src_col_offset = i * (size_t)tpc.intermediate_size;
       const size_t down_scale_src_block_k_offset = down_weight_src_col_offset / (size_t)group_size;
 
-      pool->get_subpool(i)->do_work_stealing_job(
-          tpc.expert_num, nullptr,
-          [&, &tpc](int expert_id_) {
-            const size_t expert_id = expert_map(physical_to_logical_map, expert_id_);
+      auto subpool = pool->get_subpool(i);
+      const int expert_num = tpc.expert_num;
 
-            uint8_t* gate_dst = (uint8_t*)tpc.gate_proj + expert_id * tp_weight_elems;
-            uint8_t* up_dst = (uint8_t*)tpc.up_proj + expert_id * tp_weight_elems;
-            uint8_t* down_dst = (uint8_t*)tpc.down_proj + expert_id * tp_weight_elems;
+      // Overlap I/O and Pack: process experts in batches with madvise prefetch.
+      // While CPU packs batch[k] (from_mat), kernel prefetches batch[k+1]'s mmap pages.
+      constexpr int BATCH_SIZE = 4;
+      const int num_batches = div_up(expert_num, BATCH_SIZE);
 
-            float* gate_scale_dst = (float*)tpc.gate_scale + expert_id * tp_scale_elems;
-            float* up_scale_dst = (float*)tpc.up_scale + expert_id * tp_scale_elems;
-            float* down_scale_dst = (float*)tpc.down_scale + expert_id * tp_scale_elems;
+      // Issue MADV_WILLNEED for a range of experts' mmap source regions
+      auto prefetch_batch = [&](int bs, int be) {
+        for (int e = bs; e < be; e++) {
+          const size_t eid = expert_map(physical_to_logical_map, e);
+          const void* g_s;
+          const void* u_s;
+          const void* d_s;
+          if (use_per_expert_ptrs) {
+            g_s = (const uint8_t*)config.gate_projs[0][eid] + gate_up_weight_src_offset;
+            u_s = (const uint8_t*)config.up_projs[0][eid] + gate_up_weight_src_offset;
+            d_s = config.down_projs[0][eid];
+          } else {
+            g_s = (const uint8_t*)config.gate_proj + eid * full_weight_elems + gate_up_weight_src_offset;
+            u_s = (const uint8_t*)config.up_proj + eid * full_weight_elems + gate_up_weight_src_offset;
+            d_s = (const uint8_t*)config.down_proj + eid * full_weight_elems;
+          }
+          auto advise = [](const void* addr, size_t len) {
+            uintptr_t page = (uintptr_t)addr & ~(uintptr_t)4095;
+            size_t plen = ((uintptr_t)addr + len - page + 4095) & ~(size_t)4095;
+            madvise((void*)page, plen, MADV_WILLNEED);
+          };
+          advise(g_s, tp_weight_elems);
+          advise(u_s, tp_weight_elems);
+          advise(d_s, full_weight_elems);
+        }
+      };
 
-            const uint8_t* gate_src;
-            const uint8_t* up_src;
-            const uint8_t* down_src;
-            const float* gate_scale_src;
-            const float* up_scale_src;
-            const float* down_scale_src;
+      // Kick off readahead for the first batch
+      prefetch_batch(0, std::min(BATCH_SIZE, expert_num));
 
-            if (use_per_expert_ptrs) {
-              gate_src = (const uint8_t*)config.gate_projs[0][expert_id] + gate_up_weight_src_offset;
-              up_src = (const uint8_t*)config.up_projs[0][expert_id] + gate_up_weight_src_offset;
-              down_src = (const uint8_t*)config.down_projs[0][expert_id];
+      for (int batch = 0; batch < num_batches; batch++) {
+        const int bstart = batch * BATCH_SIZE;
+        const int bend = std::min(bstart + BATCH_SIZE, expert_num);
+        const int bcount = bend - bstart;
 
-              gate_scale_src = (const float*)config.gate_scales[0][expert_id] + gate_up_scale_src_offset;
-              up_scale_src = (const float*)config.up_scales[0][expert_id] + gate_up_scale_src_offset;
-              down_scale_src = (const float*)config.down_scales[0][expert_id];
-            } else {
-              gate_src = (const uint8_t*)config.gate_proj + expert_id * full_weight_elems + gate_up_weight_src_offset;
-              up_src = (const uint8_t*)config.up_proj + expert_id * full_weight_elems + gate_up_weight_src_offset;
-              down_src = (const uint8_t*)config.down_proj + expert_id * full_weight_elems;
+        // === I/O: memcpy this batch from mmap -> staging buffer ===
+        subpool->do_work_stealing_job(
+            bcount, nullptr,
+            [&](int local_id) {
+              const int expert_id_ = bstart + local_id;
+              const size_t expert_id = expert_map(physical_to_logical_map, expert_id_);
 
-              gate_scale_src =
-                  (const float*)config.gate_scale + expert_id * full_scale_elems + gate_up_scale_src_offset;
-              up_scale_src = (const float*)config.up_scale + expert_id * full_scale_elems + gate_up_scale_src_offset;
-              down_scale_src = (const float*)config.down_scale + expert_id * full_scale_elems;
-            }
+              uint8_t* gate_dst = (uint8_t*)tpc.gate_proj + expert_id * tp_weight_elems;
+              uint8_t* up_dst = (uint8_t*)tpc.up_proj + expert_id * tp_weight_elems;
+              uint8_t* down_dst = (uint8_t*)tpc.down_proj + expert_id * tp_weight_elems;
+              float* gate_scale_dst = (float*)tpc.gate_scale + expert_id * tp_scale_elems;
+              float* up_scale_dst = (float*)tpc.up_scale + expert_id * tp_scale_elems;
+              float* down_scale_dst = (float*)tpc.down_scale + expert_id * tp_scale_elems;
 
-            std::memcpy(gate_dst, gate_src, tp_weight_elems);
-            std::memcpy(up_dst, up_src, tp_weight_elems);
-            std::memcpy(gate_scale_dst, gate_scale_src, sizeof(float) * tp_scale_elems);
-            std::memcpy(up_scale_dst, up_scale_src, sizeof(float) * tp_scale_elems);
+              const uint8_t* gate_src;
+              const uint8_t* up_src;
+              const uint8_t* down_src;
+              const float* gate_scale_src;
+              const float* up_scale_src;
+              const float* down_scale_src;
 
-            for (int row = 0; row < config.hidden_size; row++) {
-              const size_t src_row_offset = (size_t)row * (size_t)config.intermediate_size + down_weight_src_col_offset;
-              const size_t dst_row_offset = (size_t)row * (size_t)tpc.intermediate_size;
-              std::memcpy(down_dst + dst_row_offset, down_src + src_row_offset, (size_t)tpc.intermediate_size);
-            }
+              if (use_per_expert_ptrs) {
+                gate_src = (const uint8_t*)config.gate_projs[0][expert_id] + gate_up_weight_src_offset;
+                up_src = (const uint8_t*)config.up_projs[0][expert_id] + gate_up_weight_src_offset;
+                down_src = (const uint8_t*)config.down_projs[0][expert_id];
+                gate_scale_src = (const float*)config.gate_scales[0][expert_id] + gate_up_scale_src_offset;
+                up_scale_src = (const float*)config.up_scales[0][expert_id] + gate_up_scale_src_offset;
+                down_scale_src = (const float*)config.down_scales[0][expert_id];
+              } else {
+                gate_src = (const uint8_t*)config.gate_proj + expert_id * full_weight_elems + gate_up_weight_src_offset;
+                up_src = (const uint8_t*)config.up_proj + expert_id * full_weight_elems + gate_up_weight_src_offset;
+                down_src = (const uint8_t*)config.down_proj + expert_id * full_weight_elems;
+                gate_scale_src =
+                    (const float*)config.gate_scale + expert_id * full_scale_elems + gate_up_scale_src_offset;
+                up_scale_src = (const float*)config.up_scale + expert_id * full_scale_elems + gate_up_scale_src_offset;
+                down_scale_src = (const float*)config.down_scale + expert_id * full_scale_elems;
+              }
 
-            const int n_blocks_n = div_up(config.hidden_size, group_size);
-            const int full_n_blocks_k = div_up(config.intermediate_size, group_size);
-            const int tp_n_blocks_k = div_up(tpc.intermediate_size, group_size);
-            for (int bn = 0; bn < n_blocks_n; bn++) {
-              const float* src = down_scale_src + (size_t)bn * (size_t)full_n_blocks_k + down_scale_src_block_k_offset;
-              float* dst = down_scale_dst + (size_t)bn * (size_t)tp_n_blocks_k;
-              std::memcpy(dst, src, sizeof(float) * (size_t)tp_n_blocks_k);
-            }
-          },
-          nullptr);
-    });
+              std::memcpy(gate_dst, gate_src, tp_weight_elems);
+              std::memcpy(up_dst, up_src, tp_weight_elems);
+              std::memcpy(gate_scale_dst, gate_scale_src, sizeof(float) * tp_scale_elems);
+              std::memcpy(up_scale_dst, up_scale_src, sizeof(float) * tp_scale_elems);
 
-    DO_TPS_LOAD_WEIGHTS(pool);
+              for (int row = 0; row < config.hidden_size; row++) {
+                const size_t src_row_offset = (size_t)row * (size_t)config.intermediate_size + down_weight_src_col_offset;
+                const size_t dst_row_offset = (size_t)row * (size_t)tpc.intermediate_size;
+                std::memcpy(down_dst + dst_row_offset, down_src + src_row_offset, (size_t)tpc.intermediate_size);
+              }
 
-    pool->dispense_backend()->do_numa_job([&, this](int i) {
-      auto& tpc = tps[i]->config_;
+              const int n_blocks_n = div_up(config.hidden_size, group_size);
+              const int full_n_blocks_k = div_up(config.intermediate_size, group_size);
+              const int tp_n_blocks_k = div_up(tpc.intermediate_size, group_size);
+              for (int bn = 0; bn < n_blocks_n; bn++) {
+                const float* src = down_scale_src + (size_t)bn * (size_t)full_n_blocks_k + down_scale_src_block_k_offset;
+                float* dst = down_scale_dst + (size_t)bn * (size_t)tp_n_blocks_k;
+                std::memcpy(dst, src, sizeof(float) * (size_t)tp_n_blocks_k);
+              }
+            },
+            nullptr);
+
+        // Prefetch next batch — kernel reads mmap pages in background during pack
+        if (batch + 1 < num_batches) {
+          prefetch_batch((batch + 1) * BATCH_SIZE,
+                         std::min((batch + 2) * BATCH_SIZE, expert_num));
+        }
+
+        // === Pack: from_mat this batch (staging -> AMX tile format) ===
+        // gate + up
+        const int nth_gu = K::recommended_nth(tpc.intermediate_size);
+        subpool->do_work_stealing_job(
+            nth_gu * bcount, nullptr,
+            [&](int task_id) {
+              const int expert_idx = bstart + task_id / nth_gu;
+              const int ith = task_id % nth_gu;
+              const uint64_t lid = expert_map(physical_to_logical_map, expert_idx);
+              const size_t woff = lid * tp_weight_elems;
+              const size_t soff = lid * tp_scale_elems;
+              tps[i]->gate_bb_[expert_idx]->from_mat(
+                  (uint8_t*)tpc.gate_proj + woff, (float*)tpc.gate_scale + soff, ith, nth_gu);
+              tps[i]->up_bb_[expert_idx]->from_mat(
+                  (uint8_t*)tpc.up_proj + woff, (float*)tpc.up_scale + soff, ith, nth_gu);
+            },
+            nullptr);
+        // down
+        const int nth_d = K::recommended_nth(tpc.hidden_size);
+        subpool->do_work_stealing_job(
+            nth_d * bcount, nullptr,
+            [&](int task_id) {
+              const int expert_idx = bstart + task_id / nth_d;
+              const int ith = task_id % nth_d;
+              const uint64_t lid = expert_map(physical_to_logical_map, expert_idx);
+              const size_t woff = lid * tp_weight_elems;
+              const size_t soff = lid * tp_scale_elems;
+              tps[i]->down_bb_[expert_idx]->from_mat(
+                  (uint8_t*)tpc.down_proj + woff, (float*)tpc.down_scale + soff, ith, nth_d);
+            },
+            nullptr);
+      }
+
+      // Free staging buffers
       delete[] (uint8_t*)tpc.gate_proj;
       delete[] (uint8_t*)tpc.up_proj;
       delete[] (uint8_t*)tpc.down_proj;
