@@ -773,15 +773,15 @@ class TP_MOE<AMX_FP8_MOE_TP<K>> : public TP_MOE<AMX_MOE_BASE<K, AMX_FP8_MOE_TP<K
     // which kills readahead and doubles loading time for subsequent layers.
     if (use_per_expert_ptrs) {
       for (size_t e = 0; e < config.expert_num; e++) {
-        madvise((void*)config.gate_projs[0][e], full_weight_elems, MADV_DONTNEED);
-        madvise((void*)config.up_projs[0][e], full_weight_elems, MADV_DONTNEED);
-        madvise((void*)config.down_projs[0][e], full_weight_elems, MADV_DONTNEED);
+        madvise((void*)config.gate_projs[0][e], full_weight_elems, MADV_PAGEOUT);
+        madvise((void*)config.up_projs[0][e], full_weight_elems, MADV_PAGEOUT);
+        madvise((void*)config.down_projs[0][e], full_weight_elems, MADV_PAGEOUT);
       }
     } else {
       size_t total_weight_bytes = config.expert_num * full_weight_elems;
-      madvise((void*)config.gate_proj, total_weight_bytes, MADV_DONTNEED);
-      madvise((void*)config.up_proj, total_weight_bytes, MADV_DONTNEED);
-      madvise((void*)config.down_proj, total_weight_bytes, MADV_DONTNEED);
+      madvise((void*)config.gate_proj, total_weight_bytes, MADV_PAGEOUT);
+      madvise((void*)config.up_proj, total_weight_bytes, MADV_PAGEOUT);
+      madvise((void*)config.down_proj, total_weight_bytes, MADV_PAGEOUT);
     }
 
     DO_TPS_LOAD_WEIGHTS(pool);
