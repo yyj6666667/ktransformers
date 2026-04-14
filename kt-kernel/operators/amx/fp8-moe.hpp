@@ -13,9 +13,22 @@
 
 // #define DEBUG_FP8_MOE
 
+#include <numaif.h>   // move_pages
+#include <unistd.h>   // getpid
+
 #include "la/amx_raw_buffers.hpp"
 #include "la/amx_raw_kernels.hpp"
 #include "moe_base.hpp"
+
+// Check which NUMA node a pointer actually resides on.
+// Returns the NUMA node id, or -1 on error.
+static inline int query_numa_node(void* ptr) {
+  int status = -1;
+  void* pages[1] = {ptr};
+  long ret = move_pages(0, 1, pages, nullptr, &status, 0);
+  if (ret != 0) return -1;
+  return status;  // NUMA node id
+}
 
 /**
  * @brief FP8 MoE operator using CRTP pattern
@@ -666,6 +679,25 @@ class TP_MOE<AMX_FP8_MOE_TP<K>> : public TP_MOE<AMX_MOE_BASE<K, AMX_FP8_MOE_TP<K
       tpc.up_scale = new float[tpc.expert_num * tp_scale_elems];
       tpc.down_scale = new float[tpc.expert_num * tp_scale_elems];
 
+      // Touch first page to force physical allocation, then check NUMA placement
+      ((volatile uint8_t*)tpc.gate_proj)[0] = 0;
+      int expected_numa = numa_node_of_cpu(sched_getcpu());
+      int actual_numa = query_numa_node(tpc.gate_proj);
+      if (actual_numa != expected_numa) {
+        printf("[NUMA-WARN] TP%d gate_proj: expected NUMA %d, actual NUMA %d "
+               "(size=%.1f MB)\n",
+               i, expected_numa, actual_numa,
+               (double)(tpc.expert_num * tp_weight_elems) / (1024.0 * 1024.0));
+      }
+      ((volatile uint8_t*)tpc.down_proj)[0] = 0;
+      actual_numa = query_numa_node(tpc.down_proj);
+      if (actual_numa != expected_numa) {
+        printf("[NUMA-WARN] TP%d down_proj: expected NUMA %d, actual NUMA %d "
+               "(size=%.1f MB)\n",
+               i, expected_numa, actual_numa,
+               (double)(tpc.expert_num * tp_weight_elems) / (1024.0 * 1024.0));
+      }
+
       const size_t tp_idx = (size_t)i;
       const size_t gate_up_weight_src_offset = i * tp_weight_elems;
       const size_t gate_up_scale_src_offset = i * tp_scale_elems;
@@ -736,6 +768,28 @@ class TP_MOE<AMX_FP8_MOE_TP<K>> : public TP_MOE<AMX_MOE_BASE<K, AMX_FP8_MOE_TP<K
     });
 
     DO_TPS_LOAD_WEIGHTS(pool);
+
+    // After packing: check NUMA placement of persistent BufferB per expert
+    pool->dispense_backend()->do_numa_job([&, this](int i) {
+      int expected_numa = numa_node_of_cpu(sched_getcpu());
+      int remote_count = 0;
+      for (size_t e = 0; e < tps[i]->gate_bb_.size(); e++) {
+        int gate_numa = query_numa_node(tps[i]->gate_bb_[e]->b);
+        int up_numa   = query_numa_node(tps[i]->up_bb_[e]->b);
+        int down_numa = query_numa_node(tps[i]->down_bb_[e]->b);
+        if (gate_numa != expected_numa) remote_count++;
+        if (up_numa   != expected_numa) remote_count++;
+        if (down_numa != expected_numa) remote_count++;
+      }
+      size_t total = tps[i]->gate_bb_.size() * 3;
+      if (remote_count > 0) {
+        printf("[NUMA-WARN] TP%d BufferB: %d/%zu on remote NUMA (expected %d)\n",
+               i, remote_count, total, expected_numa);
+      } else {
+        printf("[NUMA-OK]   TP%d BufferB: all %zu on local NUMA %d\n",
+               i, total, expected_numa);
+      }
+    });
 
     pool->dispense_backend()->do_numa_job([&, this](int i) {
       auto& tpc = tps[i]->config_;
