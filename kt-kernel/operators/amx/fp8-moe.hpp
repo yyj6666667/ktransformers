@@ -13,8 +13,9 @@
 
 // #define DEBUG_FP8_MOE
 
-#include <numaif.h>   // move_pages
-#include <unistd.h>   // getpid
+#include <numaif.h>    // move_pages
+#include <sys/mman.h>  // madvise
+#include <unistd.h>    // getpid
 
 #include "la/amx_raw_buffers.hpp"
 #include "la/amx_raw_kernels.hpp"
@@ -766,6 +767,22 @@ class TP_MOE<AMX_FP8_MOE_TP<K>> : public TP_MOE<AMX_MOE_BASE<K, AMX_FP8_MOE_TP<K
           },
           nullptr);
     });
+
+    // Release page cache for source weight data that has been copied to temp buffers.
+    // Without this, page cache accumulates ~200GB and triggers OS memory pressure,
+    // which kills readahead and doubles loading time for subsequent layers.
+    if (use_per_expert_ptrs) {
+      for (size_t e = 0; e < config.expert_num; e++) {
+        madvise((void*)config.gate_projs[0][e], full_weight_elems, MADV_DONTNEED);
+        madvise((void*)config.up_projs[0][e], full_weight_elems, MADV_DONTNEED);
+        madvise((void*)config.down_projs[0][e], full_weight_elems, MADV_DONTNEED);
+      }
+    } else {
+      size_t total_weight_bytes = config.expert_num * full_weight_elems;
+      madvise((void*)config.gate_proj, total_weight_bytes, MADV_DONTNEED);
+      madvise((void*)config.up_proj, total_weight_bytes, MADV_DONTNEED);
+      madvise((void*)config.down_proj, total_weight_bytes, MADV_DONTNEED);
+    }
 
     DO_TPS_LOAD_WEIGHTS(pool);
 
