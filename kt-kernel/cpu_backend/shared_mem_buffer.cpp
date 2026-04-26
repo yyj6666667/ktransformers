@@ -9,8 +9,9 @@
  **/
 #include "shared_mem_buffer.h"
 
+#include "compat/posix_compat.h"  // numa.h on Linux; stubs on Windows
+
 #include <errno.h>
-#include <numa.h>
 
 #include <cstdio>
 
@@ -42,7 +43,7 @@ SharedMemBuffer::SharedMemBuffer() {
 
 SharedMemBuffer::~SharedMemBuffer() {
   if (buffer) {
-    free(buffer);
+    kt_aligned_free(buffer);
   }
 }
 
@@ -52,14 +53,12 @@ void SharedMemBuffer::alloc(void* object, MemoryRequest requests) {
 
   if (total_size > size) {
     if (buffer) {
-      free(buffer);
+      kt_aligned_free(buffer);
     }
-    void* newbuf = nullptr;
-    int rc = posix_memalign(&newbuf, 64, total_size);
-    if (rc != 0 || !newbuf) {
-      errno = rc;  // posix_memalign returns error code instead of setting errno
+    void* newbuf = kt_aligned_alloc(64, total_size);
+    if (!newbuf) {
       printf("cannot aligned alloc %zu bytes (align=%d)\n", (size_t)total_size, 64);
-      perror("posix_memalign");  // ENOMEM/EINVAL
+      perror("kt_aligned_alloc");
       exit(1);
     }
     buffer = newbuf;

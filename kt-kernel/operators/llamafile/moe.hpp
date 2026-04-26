@@ -3,8 +3,7 @@
 #ifdef FORWARD_TIME_PROFILE
 #include <fmt/format.h>
 #endif
-#include <numa.h>
-#include <numaif.h>
+#include "../../cpu_backend/compat/posix_compat.h"  // numa.h/numaif.h on Linux; stubs on Windows
 
 #include <algorithm>
 #include <cassert>

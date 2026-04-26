@@ -8,11 +8,18 @@
  * @Copyright (c) 2024 by KVCache.AI, All Rights Reserved.
  **/
 // Python bindings
+#ifndef _WIN32
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#endif
 
+// cpptrace is an optional crash-tracer (conda-installed on Linux dev boxes).
+// Skip when unavailable (Windows, or Linux env without the package).
+#if !defined(_WIN32) && __has_include(<cpptrace/cpptrace.hpp>)
+#define KT_HAS_CPPTRACE 1
 #include <cpptrace/cpptrace.hpp>
+#endif
 #include <csignal>
 #include <cstddef>
 #include <cstring>
@@ -54,7 +61,11 @@ static const bool _is_plain_ = false;
 #if defined(__x86_64__)
 #include "operators/avx2/bf16-moe.hpp"
 #include "operators/avx2/fp8-moe.hpp"
+// gptq_int4_avxvnni-moe.hpp uses GCC's __attribute__((target("avxvnni"))) which
+// MSVC does not support. AVX-VNNI dispatch on Windows is left to a future patch.
+#ifndef _MSC_VER
 #include "operators/avx2/gptq_int4_avxvnni-moe.hpp"
+#endif
 #include "operators/avx2/gptq_int4-moe.hpp"
 #endif
 
@@ -812,8 +823,10 @@ PYBIND11_MODULE(kt_kernel_ext, m) {
   bind_moe_module<AVX2_BF16_MOE_TP<avx2::GemmKernelAVX2BF16>>(moe_module, "AVX2BF16_MOE");
   bind_moe_module<AVX2_FP8_MOE_TP<avx2::GemmKernelAVX2FP8>>(moe_module, "AVX2FP8_MOE");
   bind_moe_module<AVX2_GPTQ_INT4_MOE_TP<avx2::GemmKernelAVX2GPTQInt4>>(moe_module, "AVX2GPTQInt4_MOE");
+#ifndef _MSC_VER
   bind_moe_module<AVXVNNI256_GPTQ_INT4_MOE_TP<avxvnni::GemmKernelAVXVNNI256GPTQInt4>>(moe_module,
                                                                                         "AVXVNNI256GPTQInt4_MOE");
+#endif
 #endif
 
 #if defined(USE_MOE_KERNEL)
@@ -976,8 +989,9 @@ PYBIND11_MODULE(kt_kernel_ext, m) {
             py::arg("size"), py::arg("type"));
 }
 
+#ifdef KT_HAS_CPPTRACE
 static void warmup_cpptrace() {
-  // 避免第一次调用触发 lazy-loading（malloc 等） :contentReference[oaicite:7]{index=7}
+  // 避免第一次调用触发 lazy-loading（malloc 等）
   cpptrace::frame_ptr buffer[10];
   (void)cpptrace::safe_generate_raw_trace(buffer, 10);
   cpptrace::safe_object_frame frame{};
@@ -1001,4 +1015,5 @@ __attribute__((constructor)) static void install_handlers() {
   sigaction(SIGSEGV, &sa, nullptr);
   sigaction(SIGABRT, &sa, nullptr);
 }
+#endif  // KT_HAS_CPPTRACE
 

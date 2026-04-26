@@ -49,7 +49,8 @@ if(USE_CONDA_TOOLCHAIN)
     set(CMAKE_CXX_COMPILER ${CONDA_CXX} CACHE FILEPATH "C++ compiler" FORCE)
 else()
     # Prefer system compilers explicitly to avoid accidentally picking conda wrappers from PATH
-    if(EXISTS "/usr/bin/gcc" AND EXISTS "/usr/bin/g++")
+    # Skip on Windows: MSVC is selected by the generator, no /usr/bin/gcc to pin.
+    if(NOT WIN32 AND EXISTS "/usr/bin/gcc" AND EXISTS "/usr/bin/g++")
         set(CMAKE_C_COMPILER   "/usr/bin/gcc" CACHE FILEPATH "C compiler" FORCE)
         set(CMAKE_CXX_COMPILER "/usr/bin/g++" CACHE FILEPATH "C++ compiler" FORCE)
     endif()
@@ -87,8 +88,9 @@ endif()
 ## Ensure git hooks are installed when configuring the project (monorepo-aware)
 # If we are inside a git worktree (repo root is outside kt-kernel now), invoke the installer
 # which will link kt-kernel/.githooks into the top-level .git/hooks. Otherwise, skip.
+# Skip on Windows: hooks installer is a POSIX shell script not needed for builds.
 find_program(GIT_BIN git)
-if(GIT_BIN)
+if(GIT_BIN AND NOT WIN32)
     execute_process(
         COMMAND "${GIT_BIN}" rev-parse --show-toplevel
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
@@ -126,7 +128,11 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # Use header-only fmt to avoid needing to link libfmt (fix undefined symbol vprint)
 add_compile_definitions(FMT_HEADER_ONLY)
 
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -ffast-math")
+if(MSVC)
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /O2 /fp:fast")
+else()
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -ffast-math")
+endif()
 # set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -g -fsanitize=address -fno-omit-frame-pointer")
 # set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -g -O0")
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
@@ -398,6 +404,18 @@ add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:${ARCH_FLAGS}>")
 add_compile_options("$<$<COMPILE_LANGUAGE:C>:${ARCH_FLAGS}>")
 
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../third_party/pybind11 ${CMAKE_CURRENT_BINARY_DIR}/third_party/pybind11)
+
+# Windows-only: disable ggml's bundled llamafile_sgemm (LLAMA_LLAMAFILE) to
+# avoid duplicate definition vs. our multi-arch version in third_party/llamafile/.
+# On Linux the original ON default is preserved (the static `llama` archive
+# is selectively linked so kt-kernel's own llamafile_sgemm wins without
+# triggering a duplicate-symbol error).
+if(WIN32)
+    set(LLAMA_LLAMAFILE OFF CACHE BOOL "Use ggml-bundled llamafile_sgemm" FORCE)
+    set(LLAMA_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    set(LLAMA_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+    set(LLAMA_BUILD_SERVER OFF CACHE BOOL "" FORCE)
+endif()
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../third_party/llama.cpp ${CMAKE_CURRENT_BINARY_DIR}/third_party/llama.cpp)
 
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/../third_party)
@@ -566,12 +584,21 @@ else()
     )
 endif()
 
-include(FindPkgConfig)
-if(PKG_CONFIG_FOUND)
-    pkg_search_module(HWLOC REQUIRED IMPORTED_TARGET hwloc)
-else(PKG_CONFIG_FOUND)
-    message(FATAL_ERROR "FindHWLOC needs pkg-config program and PKG_CONFIG_PATH must contain the path to hwloc.pc file.")
-endif(PKG_CONFIG_FOUND)
+# HWLOC is required on Linux for NUMA-aware thread/memory binding.
+# On Windows we skip it: AVX2 path stubs out cpu pinning (single NUMA assumption).
+if(WIN32)
+    add_library(kt_hwloc INTERFACE)
+    message(STATUS "HWLOC: skipped on Windows (using compat stub)")
+else()
+    include(FindPkgConfig)
+    if(PKG_CONFIG_FOUND)
+        pkg_search_module(HWLOC REQUIRED IMPORTED_TARGET hwloc)
+    else(PKG_CONFIG_FOUND)
+        message(FATAL_ERROR "FindHWLOC needs pkg-config program and PKG_CONFIG_PATH must contain the path to hwloc.pc file.")
+    endif(PKG_CONFIG_FOUND)
+    add_library(kt_hwloc INTERFACE)
+    target_link_libraries(kt_hwloc INTERFACE PkgConfig::HWLOC)
+endif()
 
 
 add_library(llamafile STATIC ${SOURCE_DIR4})
@@ -627,7 +654,15 @@ if(NOT HOST_IS_X86 AND KTRANSFORMERS_CPU_USE_KML)
     endif()
     target_compile_definitions(${PROJECT_NAME} PRIVATE CPU_USE_KML)
 endif()
-target_link_libraries(${PROJECT_NAME} PRIVATE llama PkgConfig::HWLOC OpenMP::OpenMP_CXX)
+# Linux: link the original `llama` target (preserves pre-port behavior bit-for-bit).
+# Windows: link `ggml` only — llama runtime (GGUF/tokenizer/unicode/sampling) is unused
+# by kt-kernel and would needlessly enlarge the .pyd. HWLOC is wrapped behind
+# kt_hwloc INTERFACE (real PkgConfig::HWLOC on Linux, no-op on Windows).
+if(WIN32)
+    target_link_libraries(${PROJECT_NAME} PRIVATE ggml kt_hwloc OpenMP::OpenMP_CXX)
+else()
+    target_link_libraries(${PROJECT_NAME} PRIVATE llama kt_hwloc OpenMP::OpenMP_CXX)
+endif()
 if(NOT HOST_IS_X86 AND KTRANSFORMERS_CPU_USE_KML)
     if(KTRANSFORMERS_CPU_DEBUG)
         # add_executable(convert-test ${CMAKE_CURRENT_SOURCE_DIR}/operators/kml/convert-test.cpp)
@@ -685,10 +720,15 @@ endif()
 
 
 
-find_library(NUMA_LIBRARY NAMES numa)
-if(NUMA_LIBRARY)
-    message(STATUS "NUMA library found: ${NUMA_LIBRARY} - enabling NUMA support")
-    target_link_libraries(${PROJECT_NAME} PRIVATE ${NUMA_LIBRARY})
+# libnuma is Linux-only; on Windows the compat shim provides no-op equivalents.
+if(WIN32)
+    message(STATUS "NUMA: skipped on Windows (using compat stub)")
 else()
-    message(FATAL_ERROR "NUMA library not found, please install NUMA, sudo apt install libnuma-dev")
+    find_library(NUMA_LIBRARY NAMES numa)
+    if(NUMA_LIBRARY)
+        message(STATUS "NUMA library found: ${NUMA_LIBRARY} - enabling NUMA support")
+        target_link_libraries(${PROJECT_NAME} PRIVATE ${NUMA_LIBRARY})
+    else()
+        message(FATAL_ERROR "NUMA library not found, please install NUMA, sudo apt install libnuma-dev")
+    endif()
 endif()

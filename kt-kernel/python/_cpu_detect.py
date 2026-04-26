@@ -197,21 +197,27 @@ def load_extension(variant):
         # We can't import kt_kernel here (circular import), so use __file__
         kt_kernel_dir = os.path.dirname(os.path.abspath(__file__))
 
-        # Try multi-variant naming first
-        pattern = os.path.join(kt_kernel_dir, f"_kt_kernel_ext_{variant}.*.so")
-        so_files = glob.glob(pattern)
+        # Extension suffix: ".so" on Linux/macOS, ".pyd" on Windows
+        ext_suffixes = ("so", "pyd")
+
+        # Try multi-variant naming first (e.g. _kt_kernel_ext_avx2.*.so / .pyd)
+        so_files = []
+        for ext_suffix in ext_suffixes:
+            so_files.extend(glob.glob(os.path.join(kt_kernel_dir, f"_kt_kernel_ext_{variant}.*.{ext_suffix}")))
 
         if not so_files:
-            # Try single-variant naming (fallback for builds without CPUINFER_BUILD_ALL_VARIANTS)
-            pattern = os.path.join(kt_kernel_dir, "kt_kernel_ext.*.so")
-            so_files = glob.glob(pattern)
+            # Single-variant naming (kt_kernel_ext.*.so / .pyd)
+            for ext_suffix in ext_suffixes:
+                so_files.extend(glob.glob(os.path.join(kt_kernel_dir, f"kt_kernel_ext.*.{ext_suffix}")))
 
             if so_files:
                 if os.environ.get("KT_KERNEL_DEBUG") == "1":
                     print(f"[kt-kernel] Multi-variant {variant} not found, using single-variant build")
             else:
                 raise ImportError(
-                    f"No .so file found for variant {variant} (tried patterns: {kt_kernel_dir}/_kt_kernel_ext_{variant}.*.so and {kt_kernel_dir}/kt_kernel_ext.*.so)"
+                    f"No extension file found for variant {variant} "
+                    f"(tried patterns: {kt_kernel_dir}/_kt_kernel_ext_{variant}.*.{{so,pyd}} "
+                    f"and {kt_kernel_dir}/kt_kernel_ext.*.{{so,pyd}})"
                 )
 
         so_file = so_files[0]

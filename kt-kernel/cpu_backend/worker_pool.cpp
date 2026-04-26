@@ -10,17 +10,17 @@
 
 #include "worker_pool.h"
 
+#include "compat/posix_compat.h"  // pulls in hwloc/numa on Linux, stubs on Windows
+#ifndef _WIN32
 #include <hwloc/bitmap.h>
-#include <numa.h>
-#include <numaif.h>
+#endif
 
 #include <algorithm>
 #include <cassert>
 #include <chrono>
 #include <cstdio>
+#include <cstring>
 #include <stdexcept>
-
-#include "hwloc.h"
 
 thread_local int WorkerPool::thread_local_id = -1;
 
@@ -58,6 +58,7 @@ InNumaPool::InNumaPool(int max_thread_num, int numa_id, int threads_id_start) {
     // set the thread name as: "numa_(numa_id)_t_(i+threads_id_start)"
     std::string thread_name = "numa_" + std::to_string(numa_id) + "_t_" + std::to_string(i + threads_id_start);
     pthread_t native_handle = workers_[i].native_handle();
+#ifndef _WIN32
     auto res_set_name = pthread_setname_np(native_handle, thread_name.c_str());
     if (res_set_name != 0) {
       fprintf(stderr, "Failed to set thread name: %s\n", strerror(res_set_name));
@@ -70,6 +71,7 @@ InNumaPool::InNumaPool(int max_thread_num, int numa_id, int threads_id_start) {
     } else {
       // printf("Failed to set thread name: %s\n", name);
     }
+#endif
     // Set the thread affinity to the specified NUMA node's CPU
     numa_obj = hwloc_get_obj_by_type(topology, HWLOC_OBJ_NUMANODE, numa_id);
     if (!numa_obj) {

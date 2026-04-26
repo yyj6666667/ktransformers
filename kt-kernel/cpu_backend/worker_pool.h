@@ -10,8 +10,7 @@
 #ifndef CPUINFER_BACKEND_H
 #define CPUINFER_BACKEND_H
 
-#include <hwloc.h>
-#include <numa.h>
+#include "compat/posix_compat.h"  // numa.h / hwloc.h on Linux; stubs on Windows
 
 #include <atomic>
 #include <barrier>

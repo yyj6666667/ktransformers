@@ -9,8 +9,7 @@
  **/
 #include "task_queue.h"
 
-#include <pthread.h>
-#include <sched.h>
+#include "compat/posix_compat.h"  // pthread.h / sched.h on Linux; stubs on Windows
 
 #include <chrono>
 #include <iostream>
