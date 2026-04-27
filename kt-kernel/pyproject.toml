@@ -25,7 +25,8 @@ dependencies = [
   "safetensors>=0.4.0",
   "compressed-tensors>=0.7.0",
   "numpy>=1.24.0",
-  "triton>=2.0.0",
+  "triton>=2.0.0 ; sys_platform != 'win32'",
+  "triton-windows>=3.5 ; sys_platform == 'win32'",
   "gguf>=0.17.0",
   # CLI dependencies
   "typer[all]>=0.9.0",
