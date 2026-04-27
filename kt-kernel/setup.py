@@ -506,6 +506,21 @@ class CMakeBuild(build_ext):
             f"-DPYTHON_EXECUTABLE={sys.executable}",
             f"-DCMAKE_BUILD_TYPE={cfg}",
         ]
+        # Windows: pybind11_add_module(MODULE) produces a .pyd that MSVC treats as
+        # a RUNTIME artifact. CMAKE_LIBRARY_OUTPUT_DIRECTORY only affects SHARED
+        # outputs, so without setting RUNTIME_OUTPUT_DIRECTORY the .pyd lands in
+        # build_temp/<Config>/ instead of extdir, and the wheel ends up empty.
+        # Also force per-config dir so multi-config generators (VS 2022) honor it.
+        if sys.platform == "win32":
+            cmake_args += [
+                f"-DCMAKE_RUNTIME_OUTPUT_DIRECTORY={extdir}/",
+                f"-DCMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE={extdir}/",
+                f"-DCMAKE_RUNTIME_OUTPUT_DIRECTORY_DEBUG={extdir}/",
+                f"-DCMAKE_RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO={extdir}/",
+                f"-DCMAKE_LIBRARY_OUTPUT_DIRECTORY_RELEASE={extdir}/",
+                f"-DCMAKE_LIBRARY_OUTPUT_DIRECTORY_DEBUG={extdir}/",
+                f"-DCMAKE_LIBRARY_OUTPUT_DIRECTORY_RELWITHDEBINFO={extdir}/",
+            ]
 
         # CPU feature flags mapping: if user specified CPUINFER_CPU_INSTRUCT, honor it;
         # else auto-pick based on detection (x86 only)
@@ -672,8 +687,12 @@ class CMakeBuild(build_ext):
         print("-- CMake build args:", " ".join(build_args))
         subprocess.run(["cmake", *build_args], cwd=build_temp, check=True)
 
-        # On some systems LTO + CMake + pybind may place the built .so inside build tree; move if needed
-        built_candidates = list(build_temp.rglob(f"{ext.name}*.so"))
+        # On some systems LTO + CMake + pybind may place the built extension
+        # inside build tree; move it if needed. Search both POSIX (.so) and
+        # Windows (.pyd) extension suffixes so the same fallback works on both.
+        built_candidates = list(build_temp.rglob(f"{ext.name}*.so")) + list(
+            build_temp.rglob(f"{ext.name}*.pyd")
+        )
         for cand in built_candidates:
             if cand.parent != extdir:
                 target = extdir / cand.name
