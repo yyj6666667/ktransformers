@@ -44,6 +44,16 @@ _kt_kernel_ext, __cpu_variant__ = _initialize_cpu()
 import sys
 
 sys.modules["kt_kernel_ext"] = _kt_kernel_ext
+# Also register under the fully-qualified `kt_kernel.kt_kernel_ext` name so
+# that user-side `from kt_kernel.kt_kernel_ext.moe import ...` (or any other
+# fully-qualified import) hits the cached module. Without this entry, on
+# Windows where the .pyd lives at `kt_kernel/kt_kernel_ext.cp312-*.pyd`,
+# Python's native import machinery would load it a *second* time as a
+# package submodule and trip pybind11's "type already registered" guard.
+# (Linux is unaffected when the multi-variant naming
+# `_kt_kernel_ext_<variant>.cpython-*.so` is used because the file name on
+# disk doesn't collide with `kt_kernel.kt_kernel_ext`.)
+sys.modules["kt_kernel.kt_kernel_ext"] = _kt_kernel_ext
 
 # Also expose kt_kernel_ext as an attribute for backward compatibility
 kt_kernel_ext = _kt_kernel_ext
