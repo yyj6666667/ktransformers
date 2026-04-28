@@ -55,6 +55,28 @@ sys.modules["kt_kernel_ext"] = _kt_kernel_ext
 # disk doesn't collide with `kt_kernel.kt_kernel_ext`.)
 sys.modules["kt_kernel.kt_kernel_ext"] = _kt_kernel_ext
 
+# pybind11 nested submodules (m.def_submodule(...)) live as attributes on
+# the parent module but don't have a __path__, so Python's import machinery
+# can't resolve `kt_kernel.kt_kernel_ext.moe` as a dotted import. Register
+# every direct submodule under its fully-qualified name in sys.modules so
+# `from kt_kernel.kt_kernel_ext.moe import ...` is a cache hit. Recursive,
+# in case future builds add nested-nested submodules.
+import types as _types
+
+def _register_pybind_submodules(parent_full_name, parent_module):
+    for name in dir(parent_module):
+        if name.startswith("_"):
+            continue
+        sub = getattr(parent_module, name, None)
+        if isinstance(sub, _types.ModuleType):
+            full = f"{parent_full_name}.{name}"
+            sys.modules[full] = sub
+            _register_pybind_submodules(full, sub)
+
+_register_pybind_submodules("kt_kernel_ext", _kt_kernel_ext)
+_register_pybind_submodules("kt_kernel.kt_kernel_ext", _kt_kernel_ext)
+del _register_pybind_submodules, _types
+
 # Also expose kt_kernel_ext as an attribute for backward compatibility
 kt_kernel_ext = _kt_kernel_ext
 
