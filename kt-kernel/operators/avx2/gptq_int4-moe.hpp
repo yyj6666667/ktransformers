@@ -168,28 +168,62 @@ static inline void gemm_gptq_sym_int4(
   for (int ni = n_start; ni < n_end; ni++) {
     for (int mi = 0; mi < m; mi++) {
       const ggml_bf16_t* a_row = a.data + (size_t)mi * a.k;
-      float sum = 0.0f;
+
+      // Single fp32 vector accumulator across all groups. Per-group scale is
+      // applied via fmadd at the end of each group, so per-group hsum_avx2
+      // (one of the original hot spots) collapses to a single hsum at the
+      // very end. Inside each group, four independent __m256 accumulators
+      // (acc0..acc3) pipeline the FMA dependency chain — AVX2 vfmadd231ps
+      // has 4-cycle latency / 0.5 throughput, so a single accumulator was
+      // pinning effective FMA throughput at ~1/4 peak.
+      __m256 total = _mm256_setzero_ps();
 
       for (int g = 0; g < num_groups; g++) {
         float scale = b.scales[g * n + ni];
         int k_base = g * group_size;
 
+        __m256 acc0 = _mm256_setzero_ps();
         __m256 acc1 = _mm256_setzero_ps();
         __m256 acc2 = _mm256_setzero_ps();
+        __m256 acc3 = _mm256_setzero_ps();
 
-        // group_size/8 iterations (e.g., 128/8 = 16)
-        for (int ki = 0; ki < group_size; ki += 8) {
-          int k_abs = k_base + ki;
+        // group_size/8 iterations (e.g., 128/8 = 16). Unrolled by 4 over
+        // independent accumulators; tail handler covers the (rare) case
+        // where iters % 4 != 0.
+        const int iters = group_size / 8;
+        int u = 0;
+        for (; u + 4 <= iters; u += 4) {
+          int k0 = k_base + (u + 0) * 8;
+          int k1 = k_base + (u + 1) * 8;
+          int k2 = k_base + (u + 2) * 8;
+          int k3 = k_base + (u + 3) * 8;
+          __m256 a0 = load_bf16_to_fp32(a_row + k0);
+          __m256 a1 = load_bf16_to_fp32(a_row + k1);
+          __m256 a2 = load_bf16_to_fp32(a_row + k2);
+          __m256 a3 = load_bf16_to_fp32(a_row + k3);
+          __m256 w0 = gptq_sym_dequant_unscaled_8x4bit(b.qweight[(k0 / 8) * n + ni]);
+          __m256 w1 = gptq_sym_dequant_unscaled_8x4bit(b.qweight[(k1 / 8) * n + ni]);
+          __m256 w2 = gptq_sym_dequant_unscaled_8x4bit(b.qweight[(k2 / 8) * n + ni]);
+          __m256 w3 = gptq_sym_dequant_unscaled_8x4bit(b.qweight[(k3 / 8) * n + ni]);
+          acc0 = _mm256_fmadd_ps(a0, w0, acc0);
+          acc1 = _mm256_fmadd_ps(a1, w1, acc1);
+          acc2 = _mm256_fmadd_ps(a2, w2, acc2);
+          acc3 = _mm256_fmadd_ps(a3, w3, acc3);
+        }
+        for (; u < iters; u++) {
+          int k_abs = k_base + u * 8;
           __m256 a_val = load_bf16_to_fp32(a_row + k_abs);
-          uint32_t packed = b.qweight[(k_abs / 8) * n + ni];
-          __m256 w_val = gptq_sym_dequant_8x4bit(packed, scale);
-          acc1 = _mm256_fmadd_ps(a_val, w_val, acc1);
+          __m256 w_val = gptq_sym_dequant_unscaled_8x4bit(b.qweight[(k_abs / 8) * n + ni]);
+          acc0 = _mm256_fmadd_ps(a_val, w_val, acc0);
         }
 
-        sum += hsum_avx2(acc1);
+        // Combine 4 lanes; deferred per-group scale via fmadd into total.
+        __m256 group_acc = _mm256_add_ps(_mm256_add_ps(acc0, acc1),
+                                         _mm256_add_ps(acc2, acc3));
+        total = _mm256_fmadd_ps(_mm256_set1_ps(scale), group_acc, total);
       }
 
-      c.data[mi * n + ni] = sum;
+      c.data[mi * n + ni] = hsum_avx2(total);
     }
   }
 }

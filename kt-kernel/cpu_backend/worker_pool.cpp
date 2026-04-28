@@ -185,8 +185,13 @@ void InNumaPool::process_tasks(int thread_id) {
       break;
     }
 
+    // omp-guided block: each worker grabs ceil(rem / worker_count) tasks per
+    // atomic step. Cuts shared-curr_ contention from O(N_task) to O(log N_task)
+    // when N_task >> worker_count, which is decisive for fine-grained tasks
+    // (e.g. AVX2 GPTQ INT4 MoE GEMV with ~1.6 us per task — atomic-per-task
+    // would otherwise dominate runtime).
     int block = (rem + worker_count - 1) / worker_count;
-    block = 1;
+    if (block < 1) block = 1;
     int task_id = curr_.fetch_add(block, std::memory_order_acq_rel);
     if (task_id >= end_) {
       break;

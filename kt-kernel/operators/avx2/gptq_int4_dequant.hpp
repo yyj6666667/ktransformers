@@ -39,6 +39,19 @@ static inline __m256 gptq_sym_dequant_8x4bit(uint32_t packed_weight, float scale
                         _mm256_set1_ps(scale));
 }
 
+// Same as gptq_sym_dequant_8x4bit but skips the per-call scale multiply.
+// Caller is responsible for applying the per-group scale once at the end of
+// the group (typically via fmadd into a fp32 accumulator), which lets the
+// inner FMA loop chain unscaled (nibble - 8) values through multiple
+// independent accumulators without per-iteration scalar broadcasts.
+static inline __m256 gptq_sym_dequant_unscaled_8x4bit(uint32_t packed_weight) {
+  const __m256i shifts = _mm256_set_epi32(28, 24, 20, 16, 12, 8, 4, 0);
+  __m256i packed_v = _mm256_set1_epi32(packed_weight);
+  __m256i nibbles = _mm256_and_si256(_mm256_srlv_epi32(packed_v, shifts),
+                                     _mm256_set1_epi32(0xF));
+  return _mm256_sub_ps(_mm256_cvtepi32_ps(nibbles), _mm256_set1_ps(8.0f));
+}
+
 // Scalar version for verification
 static inline float gptq_sym_dequant_scalar(uint32_t packed_weight, int k_in_pack, float scale) {
   int nibble = (packed_weight >> (k_in_pack * 4)) & 0xF;
