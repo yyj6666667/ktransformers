@@ -143,6 +143,12 @@ class KTMoEWrapper:
         # Quantization config (for K-Group SFT methods)
         group_size: int = 128,
         zero_point: bool = True,
+        # V4-Flash 2604B SwiGLU clamp limit. 0.0 = disabled (default for
+        # every dtype except DSV4-2604B routed experts, which set this to
+        # 10.0 to match trtllm gemm1_clamp_limit / deep_gemm
+        # _apply_swiglu_limit). Plumbed into MOEConfig.swiglu_limit and
+        # consumed by amx::act_fn. Origin: kt-sglang 耦合.
+        swiglu_limit: float = 0.0,
     ):
         """
         Factory method to create the appropriate backend implementation.
@@ -213,6 +219,7 @@ class KTMoEWrapper:
                 max_deferred_experts_per_token=max_deferred_experts_per_token,
                 method=method,
                 numa_nodes=numa_nodes,
+                swiglu_limit=swiglu_limit,
             )
         else:  # mode == "sft"
             return _create_sft_wrapper(
@@ -300,6 +307,7 @@ def _create_inference_wrapper(
     max_deferred_experts_per_token: Optional[int],
     method: str,
     numa_nodes: Optional[List[int]] = None,
+    swiglu_limit: float = 0.0,
 ) -> BaseMoEWrapper:
     """
     Create an inference wrapper based on the method.
@@ -323,7 +331,21 @@ def _create_inference_wrapper(
         # This shouldn't happen due to validation in __new__
         raise NotImplementedError(f"Unsupported inference method: {method}")
 
-    # Create and return backend instance
+    # Create and return backend instance.
+    # `swiglu_limit` is a 2604B-only feature of the MXFP4 path (NativeMoEWrapper);
+    # other backend classes don't define this kwarg yet, so only forward it
+    # when we're constructing NativeMoEWrapper. With a non-zero value passed
+    # to a non-Native backend, the user gets a clear TypeError instead of a
+    # silent no-op. Origin: kt-sglang 耦合.
+    extra_kwargs = {}
+    if backend_cls is NativeMoEWrapper:
+        extra_kwargs["swiglu_limit"] = swiglu_limit
+    elif swiglu_limit != 0.0:
+        raise ValueError(
+            f"swiglu_limit={swiglu_limit} is only supported on the MXFP4 "
+            f"NativeMoEWrapper backend, not {backend_cls.__name__} "
+            f"(method={method!r})."
+        )
     return backend_cls(
         layer_idx=layer_idx,
         num_experts=num_experts,
@@ -339,6 +361,7 @@ def _create_inference_wrapper(
         max_deferred_experts_per_token=max_deferred_experts_per_token,
         method=method,
         numa_nodes=numa_nodes,
+        **extra_kwargs,
     )
 
 

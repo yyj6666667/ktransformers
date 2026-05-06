@@ -461,6 +461,7 @@ class NativeMoEWrapper(BaseMoEWrapper):
         max_deferred_experts_per_token: Optional[int] = None,
         method: str = "RAWINT4",
         numa_nodes: Optional[List[int]] = None,
+        swiglu_limit: float = 0.0,
     ):
         if method == "RAWINT4" and not (
             _HAS_RAWINT4_SUPPORT or _HAS_AVX2_RAWINT4_SUPPORT or _HAS_AVXVNNI256_RAW_INT4_SUPPORT
@@ -520,6 +521,7 @@ class NativeMoEWrapper(BaseMoEWrapper):
             max_deferred_experts_per_token=max_deferred_experts_per_token,
             method=method,
             numa_nodes=numa_nodes,
+            swiglu_limit=swiglu_limit,
         )
 
         if NativeMoEWrapper._native_loader_instance is None:
@@ -637,6 +639,11 @@ class NativeMoEWrapper(BaseMoEWrapper):
         moe_config.layer_idx = self.layer_idx
         moe_config.pool = self.cpu_infer.backend_
         moe_config.max_len = self.chunked_prefill_size
+        # V4-Flash 2604B SwiGLU clamp; 0.0 = disabled (default for non-MXFP4
+        # paths). Read by `act_fn` in operators/amx/la/amx.hpp via
+        # `apply_activation` in operators/amx/moe_base.hpp.
+        # Origin: kt-sglang 耦合.
+        moe_config.swiglu_limit = self.swiglu_limit
 
         # Use gate_projs instead of gate_proj for per-expert pointers
         moe_config.gate_projs = gate_ptrs
