@@ -32,7 +32,7 @@ This tutorial demonstrates how to run **DeepSeek-V4-Flash** model inference usin
 | Hopper (H100 / H200) | SM_90 | triton_kernels | flash_mla wheel | — |
 | Datacenter Blackwell (B100 / B200) | SM_100 | trtllm-fp4 | Triton fallback | — |
 | Consumer Blackwell (RTX 5090) | SM_120 | triton_kernels | Triton fallback | ✓ |
-| Ada Lovelace (RTX 4090 / L20 / L40) | SM_89 | triton_kernels | Triton fallback | — |
+| Ada Lovelace (RTX 4090 / L20 / L40) | SM_89 | triton_kernels | Triton fallback | ✓ |
 | Ampere (A100 / A6000) | SM_80 / SM_86 | triton_kernels | Triton fallback | ✗ (not supported) |
 
 
