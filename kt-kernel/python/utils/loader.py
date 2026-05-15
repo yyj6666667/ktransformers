@@ -1270,6 +1270,14 @@ class MXFP4SafeTensorLoader(SafeTensorLoader):
         # (acceptable: ue8m0=0 represents 2^-127, below bf16 normal range), e=255 → +inf.
         # Compute in int32 then narrow to int16 (max value is 255<<7=32640, fits int16),
         # because torch CPU has no lshift kernel for uint16.
+        #
+        # DeepSeek V4 Flash checkpoint has some e8m0 scales = 0xFF (inf) in layer 0
+        # experts 13, 128-132. Clamp to 254 to avoid inf in computation.
+        inf_count = (scale_t == 255).sum().item()
+        if inf_count > 0:
+            print(f"[MXFP4] Warning: {inf_count} e8m0 scale values = 0xFF (inf), clamping to 0xFE")
+            scale_t = scale_t.clone()
+            scale_t[scale_t == 255] = 254
         return (scale_t.to(torch.int32) << 7).to(torch.int16).view(torch.bfloat16).contiguous()
 
     def load_experts(self, base_key: str, device: str = "cpu"):
