@@ -32,6 +32,7 @@
 #include "../../cpu_backend/worker_pool.h"
 #include "../common.hpp"
 #include "../moe-tp.hpp"
+#include "../nan_check.hpp"
 #include "la/amx.hpp"
 #include "llama.cpp/ggml.h"
 
@@ -343,6 +344,15 @@ class AMX_MOE_BASE {
         },
         nullptr);
 
+    // NaN check after Gate/Up GEMM
+    for (int i = 0; i < activated_expert; i++) {
+      int expert_idx = m_expert_id_map_[i];
+      nan_check::throw_if_nan_bf16(m_local_gate_output_ptr_[expert_idx],
+          m_local_num_[expert_idx] * config_.intermediate_size, "gate_output", config_.layer_idx, expert_idx);
+      nan_check::throw_if_nan_bf16(m_local_up_output_ptr_[expert_idx],
+          m_local_num_[expert_idx] * config_.intermediate_size, "up_output", config_.layer_idx, expert_idx);
+    }
+
 #ifdef FORWARD_TIME_PROFILE
     {
       auto now_time = std::chrono::high_resolution_clock::now();
@@ -388,6 +398,13 @@ class AMX_MOE_BASE {
         },
         nullptr);
 
+    // NaN check after Down GEMM
+    for (int i = 0; i < activated_expert; i++) {
+      int expert_idx = m_expert_id_map_[i];
+      nan_check::throw_if_nan_bf16(m_local_down_output_ptr_[expert_idx],
+          m_local_num_[expert_idx] * config_.hidden_size, "down_output", config_.layer_idx, expert_idx);
+    }
+
 #ifdef FORWARD_TIME_PROFILE
     {
       auto now_time = std::chrono::high_resolution_clock::now();
@@ -417,6 +434,8 @@ class AMX_MOE_BASE {
             auto f32out = (__m512*)((float*)output + i * config_.hidden_size + e);
             f32out[0] = x0;
             f32out[1] = x1;
+            nan_check::throw_if_nan_fp32((float*)output + i * config_.hidden_size + e, 32,
+                "weighted_sum", config_.layer_idx, -1);
           }
         },
         nullptr);
@@ -550,6 +569,15 @@ class AMX_MOE_BASE {
         },
         nullptr);
 
+    // NaN check after Gate/Up GEMM (decode)
+    for (int i = 0; i < activated_expert; i++) {
+      int expert_idx = m_expert_id_map_[i];
+      nan_check::throw_if_nan_bf16(m_local_gate_output_ptr_[expert_idx],
+          qlen * config_.intermediate_size, "gate_output_decode", config_.layer_idx, expert_idx);
+      nan_check::throw_if_nan_bf16(m_local_up_output_ptr_[expert_idx],
+          qlen * config_.intermediate_size, "up_output_decode", config_.layer_idx, expert_idx);
+    }
+
 #ifdef FORWARD_TIME_PROFILE
     {
       auto now_time = std::chrono::high_resolution_clock::now();
@@ -595,6 +623,13 @@ class AMX_MOE_BASE {
         },
         nullptr);
 
+    // NaN check after Down GEMM (decode)
+    for (int i = 0; i < activated_expert; i++) {
+      int expert_idx = m_expert_id_map_[i];
+      nan_check::throw_if_nan_bf16(m_local_down_output_ptr_[expert_idx],
+          qlen * config_.hidden_size, "down_output_decode", config_.layer_idx, expert_idx);
+    }
+
 #ifdef FORWARD_TIME_PROFILE
     {
       auto now_time = std::chrono::high_resolution_clock::now();
@@ -621,6 +656,7 @@ class AMX_MOE_BASE {
       auto f32out = (__m512*)((float*)output + e);
       f32out[0] = x0;
       f32out[1] = x1;
+      nan_check::throw_if_nan_fp32((float*)output + e, 32, "weighted_sum_decode", config_.layer_idx, -1);
     }
 
 #ifdef FORWARD_TIME_PROFILE

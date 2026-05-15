@@ -16,6 +16,7 @@
 
 #include "la/amx_raw_buffers.hpp"  // BufferABF16Impl
 #include "moe_base.hpp"
+#include "../nan_check.hpp"
 
 namespace amx {
 
@@ -144,6 +145,8 @@ struct GemmKernel224MXFP4SmallKGroup {
                                  _mm512_dpbf16_ps(_mm512_setzero_ps(), a, d3), acc3);
         }
         reduce4(acc0, acc1, acc2, acc3, c_row + (n_pos - n_start));
+        for (int i = 0; i < 4; i++)
+          nan_check::throw_if_nan_single(c_row[n_pos - n_start + i], "fp4_mat_vec_reduce4", m_idx, n_pos + i);
       }
       // N 尾巴: N % 4 != 0 时单行 fallback
       for (; n_pos < n_end; n_pos++) {
@@ -156,7 +159,9 @@ struct GemmKernel224MXFP4SmallKGroup {
           acc = _mm512_fmadd_ps(_mm512_set1_ps(s[g]),
                                 _mm512_dpbf16_ps(_mm512_setzero_ps(), a, d), acc);
         }
-        c_row[n_pos - n_start] = _mm512_reduce_add_ps(acc);
+        float result = _mm512_reduce_add_ps(acc);
+        nan_check::throw_if_nan_single(result, "fp4_mat_vec_tail", m_idx, n_pos);
+        c_row[n_pos - n_start] = result;
       }
     }
   }
@@ -223,6 +228,8 @@ struct GemmKernel224MXFP4SmallKGroup {
         for (int i = 0; i < MB; i++) {
           float* c_row = bc->get_submat(m, n, m_pos + i, n_start);
           reduce4(acc[i][0], acc[i][1], acc[i][2], acc[i][3], c_row + (n_pos - n_start));
+          for (int j = 0; j < 4; j++)
+            nan_check::throw_if_nan_single(c_row[n_pos - n_start + j], "fp4_mat_mat_reduce4", m_pos + i, n_pos + j);
         }
       }
       // N 尾巴: 单 N 列 × MB token (V4 不触发)
@@ -239,7 +246,9 @@ struct GemmKernel224MXFP4SmallKGroup {
                                                    (__m512bh)mxfp4_to_bf16_32(w[g])),
                                   acc);
           }
-          c_row[n_pos - n_start] = _mm512_reduce_add_ps(acc);
+          float result = _mm512_reduce_add_ps(acc);
+          nan_check::throw_if_nan_single(result, "fp4_mat_mat_n_tail", m_pos + i, n_pos);
+          c_row[n_pos - n_start] = result;
         }
       }
     }
@@ -271,6 +280,8 @@ struct GemmKernel224MXFP4SmallKGroup {
                                _mm512_dpbf16_ps(_mm512_setzero_ps(), a, (__m512bh)mxfp4_to_bf16_32(w3[g])), a3);
         }
         reduce4(a0, a1, a2, a3, c_row + (n_pos - n_start));
+        for (int j = 0; j < 4; j++)
+          nan_check::throw_if_nan_single(c_row[n_pos - n_start + j], "fp4_mat_mat_m_tail_reduce4", mi, n_pos + j);
       }
       for (; n_pos < n_end; n_pos++) {
         __m128i* w = (__m128i*)bb->get_submat(n, k, n_pos, 0);
@@ -283,7 +294,9 @@ struct GemmKernel224MXFP4SmallKGroup {
                                                  (__m512bh)mxfp4_to_bf16_32(w[g])),
                                 acc);
         }
-        c_row[n_pos - n_start] = _mm512_reduce_add_ps(acc);
+        float result = _mm512_reduce_add_ps(acc);
+        nan_check::throw_if_nan_single(result, "fp4_mat_mat_m_tail", mi, n_pos);
+        c_row[n_pos - n_start] = result;
       }
     }
   }
@@ -437,6 +450,13 @@ class AMX_FP4_MOE_TP : public AMX_MOE_BASE<T, AMX_FP4_MOE_TP<T>> {
                           (ggml_bf16_t*)config_.up_scale + (logical_expert_id * scale_elem_count), scale_elem_count);
           convert_or_copy(down_bb_[expert_idx]->d,
                           (ggml_bf16_t*)config_.down_scale + (logical_expert_id * scale_elem_count), scale_elem_count);
+          // NaN check after scale loading
+          nan_check::throw_if_nan_fp32(gate_bb_[expert_idx]->d, scale_elem_count,
+              "gate_scale_load", config_.layer_idx, expert_idx);
+          nan_check::throw_if_nan_fp32(up_bb_[expert_idx]->d, scale_elem_count,
+              "up_scale_load", config_.layer_idx, expert_idx);
+          nan_check::throw_if_nan_fp32(down_bb_[expert_idx]->d, scale_elem_count,
+              "down_scale_load", config_.layer_idx, expert_idx);
         },
         nullptr);
   }
