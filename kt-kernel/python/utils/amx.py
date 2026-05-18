@@ -167,6 +167,7 @@ class AMXMoEWrapper(BaseMoEWrapper):
         max_deferred_experts_per_token: Optional[int] = None,
         method: str = "AMXINT4",
         numa_nodes: Optional[List[int]] = None,
+        swiglu_limit: float = 0.0,
     ):
         """
         Initialize AMX MoE Wrapper.
@@ -188,6 +189,7 @@ class AMXMoEWrapper(BaseMoEWrapper):
             cpu_save: Whether to save weights to CPU memory
             max_deferred_experts_per_token: Number of experts per token to defer. Defaults to 0.
             method: AMX quantization method ("AMXINT4" or "AMXINT8")
+            swiglu_limit: V4-Flash 2604B SwiGLU clamp limit; 0.0 = disabled.
         """
         if method == "AMXINT4" and not _HAS_AMXINT4_SUPPORT:
             raise RuntimeError(
@@ -218,6 +220,7 @@ class AMXMoEWrapper(BaseMoEWrapper):
             max_deferred_experts_per_token=max_deferred_experts_per_token,
             method=method,
             numa_nodes=numa_nodes,
+            swiglu_limit=swiglu_limit,
         )
 
         # AMX-specific: Check if we should load merged safetensor weights
@@ -273,6 +276,7 @@ class AMXMoEWrapper(BaseMoEWrapper):
         moe_config.layer_idx = self.layer_idx
         moe_config.pool = self.cpu_infer.backend_
         moe_config.max_len = self.chunked_prefill_size
+        moe_config.swiglu_limit = self.swiglu_limit
 
         # Enable save mode for online quantization
         moe_config.save = True
@@ -388,6 +392,7 @@ class AMXMoEWrapper(BaseMoEWrapper):
         moe_config.layer_idx = self.layer_idx
         moe_config.pool = self.cpu_infer.backend_
         moe_config.max_len = self.chunked_prefill_size
+        moe_config.swiglu_limit = self.swiglu_limit
 
         moe_config.gate_proj = gate_ptr
         moe_config.up_proj = up_ptr

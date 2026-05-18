@@ -340,22 +340,22 @@ def _create_inference_wrapper(
         raise NotImplementedError(f"Unsupported inference method: {method}")
 
     # Create and return backend instance.
-    # `swiglu_limit != 0` is meaningful only on the MXFP4 path. NativeMoEWrapper
-    # also serves RAWINT4 / FP8 / BF16 / FP8_PERCHANNEL / GPTQ_INT4, so a
-    # `backend_cls is NativeMoEWrapper` test would silently forward a stale
-    # 10.0 (e.g., from a leftover SGLANG_DSV4_2604_SUBMODE=2604B in the env)
-    # into a non-MXFP4 backend; act_fn would then clamp gate/up to ±10 with
-    # no warning. Gate strictly on method instead. Origin: kt-sglang 耦合.
+    # `swiglu_limit != 0` is a V4-Flash 2604B model architecture feature
+    # (activation clamp on SwiGLU gate/up). The C++ act_fn in amx.hpp
+    # supports it for all AMX-based backends. Gate on method to avoid
+    # silently forwarding a stale 10.0 into backends that have not been
+    # validated (e.g., RAWINT4 / FP8 / BF16). Origin: kt-sglang 耦合.
     extra_kwargs = {}
-    if method == "MXFP4":
+    if method in ("MXFP4", "AMXINT4", "AMXINT8"):
         extra_kwargs["swiglu_limit"] = swiglu_limit
     elif swiglu_limit != 0.0:
         raise ValueError(
-            f"swiglu_limit={swiglu_limit} is only supported on method='MXFP4', "
-            f"got method={method!r} (backend={backend_cls.__name__}). This "
-            f"usually means SGLANG_DSV4_2604_SUBMODE=2604B is set in the "
-            f"environment while the current launch does not actually use "
-            f"MXFP4 weights — either unset the env or pass --kt-method MXFP4."
+            f"swiglu_limit={swiglu_limit} is only supported on "
+            f"method='MXFP4'/'AMXINT4'/'AMXINT8', got method={method!r} "
+            f"(backend={backend_cls.__name__}). This usually means "
+            f"SGLANG_DSV4_2604_SUBMODE=2604B is set in the environment "
+            f"while the current launch uses an incompatible weight format "
+            f"— either unset the env or pass a compatible --kt-method."
         )
     return backend_cls(
         layer_idx=layer_idx,
