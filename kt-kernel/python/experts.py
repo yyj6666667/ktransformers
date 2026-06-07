@@ -332,6 +332,14 @@ def _create_inference_wrapper(
     Returns:
         BaseMoEWrapper instance
     """
+    # M3-PROBE-2: verify swiglu_alpha/swiglu_limit reach the kt-kernel
+    # _create_inference_wrapper entry point. Remove after M3 hybrid is OK.
+    if layer_idx == 4:
+        print(
+            f"[M3-PROBE-2] layer_idx={layer_idx} method={method!r} "
+            f"swiglu_alpha={swiglu_alpha!r} swiglu_limit={swiglu_limit!r}",
+            flush=True,
+        )
     # Select backend based on method
     if method in ["AMXINT4", "AMXINT8"]:
         backend_cls = AMXMoEWrapper

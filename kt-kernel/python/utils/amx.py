@@ -770,6 +770,18 @@ class NativeMoEWrapper(BaseMoEWrapper):
             moe_config.quant_config.group_size = group_size
             moe_config.quant_config.zero_point = False
             moe_config.swiglu_alpha = getattr(self, "_swiglu_alpha", 0.0)
+            # M3-PROBE-3: verify swiglu_alpha/swiglu_limit reach MOEConfig
+            # right before being passed into the C++ MoE constructor.
+            # Remove after M3 hybrid is confirmed coherent.
+            if self.layer_idx == 4:
+                print(
+                    f"[M3-PROBE-3] layer_idx={self.layer_idx} method={self.method!r} "
+                    f"moe_config.swiglu_alpha={moe_config.swiglu_alpha!r} "
+                    f"moe_config.swiglu_limit={moe_config.swiglu_limit!r} "
+                    f"self._swiglu_alpha={self._swiglu_alpha!r} "
+                    f"self.swiglu_limit={self.swiglu_limit!r}",
+                    flush=True,
+                )
             self.moe = AMXMXFP8_KGroup_MOE(moe_config)
         elif self.method == "FP8":
             moe_config.quant_config.bits = 8
