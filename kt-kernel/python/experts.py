@@ -40,6 +40,8 @@ INFERENCE_METHODS = frozenset(
         "BF16",  # BF16 native MoE
         "FP8_PERCHANNEL",  # Per-channel FP8
         "GPTQ_INT4",  # GPTQ INT4
+        "MXFP4",  # MXFP4 (E2M1 nibble + ue8m0 group scale, e.g. DeepSeek-V4-Flash routed experts)
+        "MXFP8",  # MXFP8 (E4M3fn byte + ue8m0 group scale, e.g. MiniMax-M3-Preview)
         "LLAMAFILE",  # GGUF format
         "MOE_INT4",
         "MOE_INT8",  # General kernel
@@ -142,6 +144,15 @@ class KTMoEWrapper:
         # Quantization config (for K-Group SFT methods)
         group_size: int = 128,
         zero_point: bool = True,
+        # V4-Flash 2604B SwiGLU clamp limit. 0.0 = disabled (default for
+        # every dtype except DSV4-2604B routed experts, which set this to
+        # 10.0 to match trtllm gemm1_clamp_limit / deep_gemm
+        # _apply_swiglu_limit). Plumbed into MOEConfig.swiglu_limit and
+        # consumed by amx::act_fn. Origin: kt-sglang 耦合.
+        swiglu_limit: float = 0.0,
+        # MiniMax M3 swigluoai sigmoid alpha. 0.0 = standard silu (default).
+        # Non-zero triggers gate * sigmoid(gate * alpha) * (up + 1) in act_fn.
+        swiglu_alpha: float = 0.0,
     ):
         """
         Factory method to create the appropriate backend implementation.
@@ -212,8 +223,18 @@ class KTMoEWrapper:
                 max_deferred_experts_per_token=max_deferred_experts_per_token,
                 method=method,
                 numa_nodes=numa_nodes,
+                swiglu_limit=swiglu_limit,
+                swiglu_alpha=swiglu_alpha,
             )
         else:  # mode == "sft"
+            # SFT factory does not plumb swiglu_limit; reject non-zero
+            # rather than dropping it on the floor. Origin: kt-sglang 耦合.
+            if swiglu_limit != 0.0:
+                raise ValueError(
+                    f"swiglu_limit={swiglu_limit} is not supported in "
+                    f"mode='sft' (method={method!r}); SFT backends do not "
+                    f"implement the V4-2604B clamp."
+                )
             return _create_sft_wrapper(
                 layer_idx=layer_idx,
                 num_experts=num_experts,
@@ -299,6 +320,8 @@ def _create_inference_wrapper(
     max_deferred_experts_per_token: Optional[int],
     method: str,
     numa_nodes: Optional[List[int]] = None,
+    swiglu_limit: float = 0.0,
+    swiglu_alpha: float = 0.0,
 ) -> BaseMoEWrapper:
     """
     Create an inference wrapper based on the method.
@@ -312,7 +335,7 @@ def _create_inference_wrapper(
     # Select backend based on method
     if method in ["AMXINT4", "AMXINT8"]:
         backend_cls = AMXMoEWrapper
-    elif method in ["RAWINT4", "FP8", "BF16", "FP8_PERCHANNEL", "GPTQ_INT4"]:
+    elif method in ["RAWINT4", "FP8", "BF16", "FP8_PERCHANNEL", "GPTQ_INT4", "MXFP4", "MXFP8"]:
         backend_cls = NativeMoEWrapper
     elif method == "LLAMAFILE":
         backend_cls = LlamafileMoEWrapper
@@ -322,7 +345,25 @@ def _create_inference_wrapper(
         # This shouldn't happen due to validation in __new__
         raise NotImplementedError(f"Unsupported inference method: {method}")
 
-    # Create and return backend instance
+    # Create and return backend instance.
+    # `swiglu_limit != 0` is meaningful only on the MXFP4 path. NativeMoEWrapper
+    # also serves RAWINT4 / FP8 / BF16 / FP8_PERCHANNEL / GPTQ_INT4, so a
+    # `backend_cls is NativeMoEWrapper` test would silently forward a stale
+    # 10.0 (e.g., from a leftover SGLANG_DSV4_2604_SUBMODE=2604B in the env)
+    # into a non-MXFP4 backend; act_fn would then clamp gate/up to ±10 with
+    # no warning. Gate strictly on method instead. Origin: kt-sglang 耦合.
+    extra_kwargs = {}
+    if method in ("MXFP4", "MXFP8"):
+        extra_kwargs["swiglu_limit"] = swiglu_limit
+        extra_kwargs["swiglu_alpha"] = swiglu_alpha
+    elif swiglu_limit != 0.0:
+        raise ValueError(
+            f"swiglu_limit={swiglu_limit} is only supported on method='MXFP4'/'MXFP8', "
+            f"got method={method!r} (backend={backend_cls.__name__}). This "
+            f"usually means SGLANG_DSV4_2604_SUBMODE=2604B is set in the "
+            f"environment while the current launch does not actually use "
+            f"MXFP4/MXFP8 weights — either unset the env or pass --kt-method MXFP4/MXFP8."
+        )
     return backend_cls(
         layer_idx=layer_idx,
         num_experts=num_experts,
@@ -338,6 +379,7 @@ def _create_inference_wrapper(
         max_deferred_experts_per_token=max_deferred_experts_per_token,
         method=method,
         numa_nodes=numa_nodes,
+        **extra_kwargs,
     )
 
 

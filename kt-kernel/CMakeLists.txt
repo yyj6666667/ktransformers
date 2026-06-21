@@ -16,6 +16,7 @@ option(LLAMA_AVX512_FANCY_SIMD "llama: enable AVX512-VL, AVX512-BW, AVX512-DQ, A
 option(KTRANSFORMERS_USE_CUDA "ktransformers: use CUDA" OFF)
 option(KTRANSFORMERS_USE_MUSA "ktransformers: use MUSA" OFF)
 option(KTRANSFORMERS_USE_ROCM "ktransformers: use ROCM" OFF)
+option(KTRANSFORMERS_USE_MACA "ktransformers: use MACA" OFF)
 option(KTRANSFORMERS_CUDA_STATIC_RUNTIME "ktransformers: statically link CUDA runtime" ON)
 option(KTRANSFORMERS_CPU_USE_KML "ktransformers: CPU use KML" OFF)
 option(KTRANSFORMERS_CPU_USE_AMX_AVX512 "ktransformers: CPU use AMX or AVX512" OFF)
@@ -24,10 +25,11 @@ option(KTRANSFORMERS_CPU_DEBUG "ktransformers: DEBUG CPU use AMX" OFF)
 option(KTRANSFORMERS_CPU_MLA "ktransformers: CPU use MLA" OFF)
 option(KTRANSFORMERS_CPU_MOE_KERNEL "ktransformers: CPU use moe kernel" OFF)
 option(KTRANSFORMERS_CPU_MOE_AMD "ktransformers: CPU use moe kernel for amd" OFF)
+option(KTRANSFORMERS_ENABLE_CPPTRACE "Enable native crash tracing in kt-kernel" OFF)
 # LTO control
 option(CPUINFER_ENABLE_LTO "Enable link time optimization (IPO)" OFF)
 
-project(kt_kernel_ext VERSION 0.5.3)
+project(kt_kernel_ext VERSION 0.6.1)
 
 # Auto-detect CPU features early (unless building with LLAMA_NATIVE)
 if(NOT LLAMA_NATIVE AND NOT MSVC)
@@ -328,6 +330,16 @@ endif()
 
 list(APPEND CMAKE_MODULE_PATH "${MUSA_PATH}/cmake")
 
+if(NOT DEFINED MACA_PATH OR MACA_PATH STREQUAL "")
+    if(DEFINED ENV{MACA_PATH} AND EXISTS "$ENV{MACA_PATH}")
+        set(MACA_PATH $ENV{MACA_PATH})
+    elseif(EXISTS /opt/maca)
+        set(MACA_PATH /opt/maca)
+    else()
+        set(MACA_PATH /usr/local/maca)
+    endif()
+endif()
+
 if(KTRANSFORMERS_CPU_MOE_AMD)
     set(BLIS_ROOT "" CACHE PATH "Root directory of BLIS installation")
     set(_BLIS_SEARCH_DIRS)
@@ -369,6 +381,11 @@ if(HOST_IS_X86)
             add_compile_definitions(HAVE_AMX=1)
             list(APPEND ARCH_FLAGS -mamx-tile -mamx-bf16 -mamx-int8)
             message(STATUS "AMX enabled")
+        endif()
+        if(NOT MSVC)
+            # AMX/SFT kernels use 256-bit AVX512 masked load/store intrinsics.
+            # GCC requires AVX512VL in addition to AVX512BW for those intrinsics.
+            list(APPEND ARCH_FLAGS -mavx512vl)
         endif()
         # add_executable(amx-test ${CMAKE_CURRENT_SOURCE_DIR}/operators/amx/amx-test.cpp)
         # target_link_libraries(amx-test llama)
@@ -457,6 +474,33 @@ elseif(KTRANSFORMERS_USE_MUSA)
         message(STATUS "MUSA Toolkit found")
         add_compile_definitions(KTRANSFORMERS_USE_MUSA=1)
     endif()
+elseif(KTRANSFORMERS_USE_MACA)
+    find_path(MACA_INCLUDE_DIR
+        NAMES mcr/maca.h
+        HINTS "${MACA_PATH}"
+        PATH_SUFFIXES include
+    )
+    find_library(MACA_RUNTIME_LIBRARY
+        NAMES mcruntime
+        HINTS "${MACA_PATH}"
+        PATH_SUFFIXES lib lib64
+    )
+    find_library(MACA_BLAS_LIBRARY
+        NAMES mcblas
+        HINTS "${MACA_PATH}"
+        PATH_SUFFIXES lib lib64
+    )
+
+    if(NOT MACA_INCLUDE_DIR OR NOT MACA_RUNTIME_LIBRARY OR NOT MACA_BLAS_LIBRARY)
+        message(FATAL_ERROR "KTRANSFORMERS_USE_MACA=ON but MACA SDK was not found. Set MACA_PATH to the MACA SDK root.")
+    endif()
+
+    message(STATUS "MACA SDK found at ${MACA_PATH}")
+    message(STATUS "MACA include: ${MACA_INCLUDE_DIR}")
+    message(STATUS "MACA runtime: ${MACA_RUNTIME_LIBRARY}")
+    message(STATUS "MACA BLAS: ${MACA_BLAS_LIBRARY}")
+    include_directories(${MACA_INCLUDE_DIR})
+    add_compile_definitions(KTRANSFORMERS_USE_MACA=1)
 elseif(KTRANSFORMERS_CPU_USE_KML)
     message(STATUS "KML CPU detected")
 else()
@@ -588,6 +632,19 @@ else()
     message(STATUS "LTO: disabled")
 endif()
 
+if(KTRANSFORMERS_ENABLE_CPPTRACE)
+    include(FetchContent)
+    FetchContent_Declare(
+      cpptrace
+      GIT_REPOSITORY https://github.com/jeremy-rifkin/cpptrace.git
+      GIT_TAG        v1.0.4
+    )
+    FetchContent_MakeAvailable(cpptrace)
+    target_link_libraries(${PROJECT_NAME} PRIVATE cpptrace::cpptrace)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE KTRANSFORMERS_ENABLE_CPPTRACE=1)
+    message(STATUS "cpptrace: enabled")
+endif()
+
 # If BLIS was detected earlier, apply its include directory and library to the
 # created Python extension target. We only do this after the module target
 # (${PROJECT_NAME}) has been created by pybind11_add_module().
@@ -647,6 +704,7 @@ endif()
 
 
 if(KTRANSFORMERS_USE_CUDA)
+    add_compile_definitions(USE_CUDA=1)
     # Link CUDA runtime (static or dynamic)
     if(KTRANSFORMERS_CUDA_STATIC_RUNTIME)
         # Platform-aware static library path
@@ -680,7 +738,14 @@ if(KTRANSFORMERS_USE_ROCM)
     message(STATUS "Building for HIP")
 endif()
 if(KTRANSFORMERS_USE_MUSA)
+    add_compile_definitions(USE_MUSA=1)
     target_link_libraries(${PROJECT_NAME} PRIVATE MUSA::musart)
+    message(STATUS "Building for MUSA")
+endif()
+if(KTRANSFORMERS_USE_MACA)
+    add_compile_definitions(USE_MACA=1)
+    target_link_libraries(${PROJECT_NAME} PRIVATE ${MACA_RUNTIME_LIBRARY} ${MACA_BLAS_LIBRARY})
+    message(STATUS "Building for MACA")
 endif()
 
 

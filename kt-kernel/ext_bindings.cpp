@@ -12,7 +12,9 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#if defined(KTRANSFORMERS_ENABLE_CPPTRACE)
 #include <cpptrace/cpptrace.hpp>
+#endif
 #include <csignal>
 #include <cstddef>
 #include <cstring>
@@ -42,6 +44,8 @@ static const bool _is_plain_ = false;
 #if defined(__x86_64__) && defined(USE_AMX_AVX_KERNEL)
 #include "operators/amx/awq-moe.hpp"
 #include "operators/amx/bf16-moe.hpp"            // Native BF16 MoE using CRTP pattern, with fallback for AVX512F
+#include "operators/amx/fp4-moe.hpp"             // MXFP4 MoE: FP4 E2M1 weights × BF16 activations
+#include "operators/amx/mxfp8-moe.hpp"           // MXFP8 MoE: FP8 E4M3fn weights × BF16 activations (MiniMax M3)
 #include "operators/amx/fp8-moe.hpp"             // FP8 MoE requires AVX512 BF16 support, with fallback for AVX512F+BW
 #include "operators/amx/fp8-perchannel-moe.hpp"  // FP8 Per-Channel MoE for GLM-4.7-FP8
 #include "operators/amx/k2-moe.hpp"
@@ -54,8 +58,12 @@ static const bool _is_plain_ = false;
 #if defined(__x86_64__)
 #include "operators/avx2/bf16-moe.hpp"
 #include "operators/avx2/fp8-moe.hpp"
-#include "operators/avx2/gptq_int4_avxvnni-moe.hpp"
 #include "operators/avx2/gptq_int4-moe.hpp"
+#include "operators/avx2/gptq_int4_avxvnni-moe.hpp"
+#include "operators/avx2/mxfp4-moe.hpp"
+#include "operators/avx2/mxfp8-moe.hpp"
+#include "operators/avx2/rawint4-moe.hpp"
+#include "operators/avx2/rawint4_avxvnni-moe.hpp"
 #endif
 
 #include <pybind11/stl.h>  // std::vector/std::pair/std::string conversions
@@ -73,7 +81,6 @@ static const bool _is_plain_ = false;
 
 namespace py = pybind11;
 using namespace pybind11::literals;
-
 
 py::object to_float_ptr(uintptr_t input_ptr, int size, ggml_type type) {
   if (type < 0 || type >= GGML_TYPE_COUNT) {
@@ -473,7 +480,6 @@ void bind_moe_module(py::module_& moe_module, const char* name) {
 }
 
 PYBIND11_MODULE(kt_kernel_ext, m) {
-
   py::class_<WorkerPool>(m, "WorkerPool").def(py::init<int>());
   py::class_<WorkerPoolConfig>(m, "WorkerPoolConfig")
       .def(py::init<>())
@@ -754,6 +760,9 @@ PYBIND11_MODULE(kt_kernel_ext, m) {
       .def_readwrite("down_type", &GeneralMOEConfig::down_type)
       .def_readwrite("hidden_type", &GeneralMOEConfig::hidden_type)
       .def_readwrite("max_cache_depth", &GeneralMOEConfig::max_cache_depth)
+      // V4-Flash 2604B SwiGLU clamp limit (0.0 = disabled). See common.hpp.
+      .def_readwrite("swiglu_limit", &GeneralMOEConfig::swiglu_limit)
+      .def_readwrite("swiglu_alpha", &GeneralMOEConfig::swiglu_alpha)
 
       ;
 
@@ -786,7 +795,10 @@ PYBIND11_MODULE(kt_kernel_ext, m) {
   bind_moe_module<AMX_BF16_MOE_TP<amx::GemmKernel224BF16>>(moe_module, "AMXBF16_MOE");
   bind_moe_module<AMX_FP8_MOE_TP<amx::GemmKernel224FP8>>(moe_module, "AMXFP8_MOE");
   bind_moe_module<AMX_FP8_PERCHANNEL_MOE_TP<amx::GemmKernel224FP8PerChannel>>(moe_module, "AMXFP8PerChannel_MOE");
+  bind_moe_module<AMX_FP4_MOE_TP<amx::GemmKernel224MXFP4SmallKGroup>>(moe_module, "AMXFP4_KGroup_MOE");
+  bind_moe_module<AMX_MXFP8_MOE_TP<amx::GemmKernel224MXFP8SmallKGroup>>(moe_module, "AMXMXFP8_KGroup_MOE");
 #endif
+#if defined(__AVX512BF16__)
   // SFT MoE with LoRA support (BF16, INT8, INT4, AWQ, K2)
   bind_moe_sft_module<AMX_SFT_MOE_TP<amx::GemmKernel224BF>>(moe_module, "AMXBF16_SFT_MOE");
   bind_moe_sft_module<AMX_SFT_MOE_TP<amx::GemmKernel224Int8>>(moe_module, "AMXInt8_SFT_MOE");
@@ -807,13 +819,19 @@ PYBIND11_MODULE(kt_kernel_ext, m) {
   // bind_moe_sft_module<AMX_SFT_MOE_TP<amx::GemmKernel224Int4SmallKGroup, AMX_K2_MOE_TP, true>>(
   //     moe_module, "AMXInt4_KGroup_SFT_MOE_SkipLoRA");
 #endif
+#endif
 // AVX2 backends — available on all x86_64 (no AMX/AVX512 requirement)
 #if defined(__x86_64__)
   bind_moe_module<AVX2_BF16_MOE_TP<avx2::GemmKernelAVX2BF16>>(moe_module, "AVX2BF16_MOE");
   bind_moe_module<AVX2_FP8_MOE_TP<avx2::GemmKernelAVX2FP8>>(moe_module, "AVX2FP8_MOE");
   bind_moe_module<AVX2_GPTQ_INT4_MOE_TP<avx2::GemmKernelAVX2GPTQInt4>>(moe_module, "AVX2GPTQInt4_MOE");
+  bind_moe_module<AVX2_RAW_INT4_MOE_TP<avx2::GemmKernelAVX2RawInt4>>(moe_module, "AVX2RawInt4_MOE");
+  bind_moe_module<AVX2_MXFP4_MOE_TP<avx2::GemmKernelAVX2MXFP4>>(moe_module, "AVX2MXFP4_MOE");
+  bind_moe_module<AVX2_MXFP8_MOE_TP<avx2::GemmKernelAVX2MXFP8>>(moe_module, "AVX2MXFP8_MOE");
   bind_moe_module<AVXVNNI256_GPTQ_INT4_MOE_TP<avxvnni::GemmKernelAVXVNNI256GPTQInt4>>(moe_module,
-                                                                                        "AVXVNNI256GPTQInt4_MOE");
+                                                                                      "AVXVNNI256GPTQInt4_MOE");
+  bind_moe_module<AVXVNNI256_RAW_INT4_MOE_TP<avxvnni_rawint4::GemmKernelAVXVNNI256RawInt4>>(moe_module,
+                                                                                            "AVXVNNI256RawInt4_MOE");
 #endif
 
 #if defined(USE_MOE_KERNEL)
@@ -976,6 +994,7 @@ PYBIND11_MODULE(kt_kernel_ext, m) {
             py::arg("size"), py::arg("type"));
 }
 
+#if defined(KTRANSFORMERS_ENABLE_CPPTRACE)
 static void warmup_cpptrace() {
   // 避免第一次调用触发 lazy-loading（malloc 等） :contentReference[oaicite:7]{index=7}
   cpptrace::frame_ptr buffer[10];
@@ -1002,3 +1021,4 @@ __attribute__((constructor)) static void install_handlers() {
   sigaction(SIGABRT, &sa, nullptr);
 }
 
+#endif

@@ -1,7 +1,11 @@
+import gc
+import logging
 import os
 import torch
 import ctypes
 from typing import List, Optional
+
+logger = logging.getLogger(__name__)
 
 # Use relative imports for package structure
 from ..experts_base import BaseMoEWrapper
@@ -11,6 +15,8 @@ from .loader import (
     FP8SafeTensorLoader,
     BF16SafeTensorLoader,
     GPTQSafeTensorLoader,
+    MXFP4SafeTensorLoader,
+    MXFP8SafeTensorLoader,
 )
 from kt_kernel_ext.moe import MOEConfig
 import kt_kernel_ext.moe as _moe_mod
@@ -18,25 +24,38 @@ import kt_kernel_ext.moe as _moe_mod
 AMXInt4_MOE = getattr(_moe_mod, "AMXInt4_MOE", None)
 AMXInt8_MOE = getattr(_moe_mod, "AMXInt8_MOE", None)
 AMXInt4_KGroup_MOE = getattr(_moe_mod, "AMXInt4_KGroup_MOE", None)
+AMXFP4_KGroup_MOE = getattr(_moe_mod, "AMXFP4_KGroup_MOE", None)
+AMXMXFP8_KGroup_MOE = getattr(_moe_mod, "AMXMXFP8_KGroup_MOE", None)
 AMXFP8_MOE = getattr(_moe_mod, "AMXFP8_MOE", None)
 AMXBF16_MOE = getattr(_moe_mod, "AMXBF16_MOE", None)
 AMXFP8PerChannel_MOE = getattr(_moe_mod, "AMXFP8PerChannel_MOE", None)
 AVX2BF16_MOE = getattr(_moe_mod, "AVX2BF16_MOE", None)
 AVX2FP8_MOE = getattr(_moe_mod, "AVX2FP8_MOE", None)
 AVX2GPTQInt4_MOE = getattr(_moe_mod, "AVX2GPTQInt4_MOE", None)
+AVX2RawInt4_MOE = getattr(_moe_mod, "AVX2RawInt4_MOE", None)
+AVX2MXFP4_MOE = getattr(_moe_mod, "AVX2MXFP4_MOE", None)
+AVX2MXFP8_MOE = getattr(_moe_mod, "AVX2MXFP8_MOE", None)
 AVXVNNI256GPTQInt4_MOE = getattr(_moe_mod, "AVXVNNI256GPTQInt4_MOE", None)
+AVXVNNI256RawInt4_MOE = getattr(_moe_mod, "AVXVNNI256RawInt4_MOE", None)
 
 _HAS_AMXINT4_SUPPORT = AMXInt4_MOE is not None
 _HAS_AMXINT8_SUPPORT = AMXInt8_MOE is not None
 _HAS_RAWINT4_SUPPORT = AMXInt4_KGroup_MOE is not None
+_HAS_MXFP4_SUPPORT = AMXFP4_KGroup_MOE is not None
+_HAS_MXFP8_SUPPORT = AMXMXFP8_KGroup_MOE is not None
 _HAS_FP8_SUPPORT = AMXFP8_MOE is not None
 _HAS_BF16_SUPPORT = AMXBF16_MOE is not None
 _HAS_FP8_PERCHANNEL_SUPPORT = AMXFP8PerChannel_MOE is not None
 _HAS_AVX2_BF16_SUPPORT = AVX2BF16_MOE is not None
 _HAS_AVX2_FP8_SUPPORT = AVX2FP8_MOE is not None
 _HAS_AVX2_GPTQ_INT4_SUPPORT = AVX2GPTQInt4_MOE is not None
+_HAS_AVX2_RAWINT4_SUPPORT = AVX2RawInt4_MOE is not None
+_HAS_AVX2_MXFP4_SUPPORT = AVX2MXFP4_MOE is not None
+_HAS_AVX2_MXFP8_SUPPORT = AVX2MXFP8_MOE is not None
 _HAS_AVXVNNI256_GPTQ_INT4_SUPPORT = AVXVNNI256GPTQInt4_MOE is not None
+_HAS_AVXVNNI256_RAW_INT4_SUPPORT = AVXVNNI256RawInt4_MOE is not None
 _AVXVNNI256_GPTQ_INT4_MAX_GROUP_SIZE = 256
+_AVXVNNI256_RAW_INT4_MAX_GROUP_SIZE = 256
 
 
 def _host_has_cpu_flag(*flag_names: str) -> bool:
@@ -58,6 +77,12 @@ def _supports_avxvnni256_gptq_int4_group_size(group_size: Optional[int]) -> bool
     if group_size is None:
         return True
     return group_size > 0 and group_size % 32 == 0 and group_size <= _AVXVNNI256_GPTQ_INT4_MAX_GROUP_SIZE
+
+
+def _supports_avxvnni256_rawint4_group_size(group_size: Optional[int]) -> bool:
+    if group_size is None:
+        return True
+    return group_size > 0 and group_size % 32 == 0 and group_size <= _AVXVNNI256_RAW_INT4_MAX_GROUP_SIZE
 
 
 def _select_gptq_int4_backend(group_size: Optional[int] = None):
@@ -86,6 +111,111 @@ def _select_gptq_int4_backend(group_size: Optional[int] = None):
         return AVXVNNI256GPTQInt4_MOE
     if _HAS_AVX2_GPTQ_INT4_SUPPORT:
         return AVX2GPTQInt4_MOE
+    return None
+
+
+def _select_rawint4_backend(group_size: Optional[int] = None):
+    forced = os.getenv("KT_RAWINT4_BACKEND", "").strip().lower()
+    avxvnni_group_supported = _supports_avxvnni256_rawint4_group_size(group_size)
+
+    if forced == "amx":
+        if not _HAS_RAWINT4_SUPPORT:
+            raise RuntimeError("KT_RAWINT4_BACKEND=amx requested, but AMXInt4_KGroup_MOE is not compiled in.")
+        return AMXInt4_KGroup_MOE
+
+    if forced in {"avxvnni", "avxvnni256"}:
+        if not _HAS_AVXVNNI256_RAW_INT4_SUPPORT:
+            raise RuntimeError("KT_RAWINT4_BACKEND=avxvnni requested, but AVXVNNI256RawInt4_MOE is not compiled in.")
+        if not _HOST_HAS_AVX_VNNI:
+            raise RuntimeError("KT_RAWINT4_BACKEND=avxvnni requested, but the current CPU does not support avx_vnni.")
+        if not avxvnni_group_supported:
+            raise RuntimeError(
+                "KT_RAWINT4_BACKEND=avxvnni requested, but "
+                f"group_size={group_size} is unsupported. AVX-VNNI-256 RAWINT4 only supports "
+                f"positive multiples of 32 up to {_AVXVNNI256_RAW_INT4_MAX_GROUP_SIZE}."
+            )
+        return AVXVNNI256RawInt4_MOE
+
+    if forced == "avx2":
+        if not _HAS_AVX2_RAWINT4_SUPPORT:
+            raise RuntimeError("KT_RAWINT4_BACKEND=avx2 requested, but AVX2RawInt4_MOE is not compiled in.")
+        return AVX2RawInt4_MOE
+
+    if _HAS_RAWINT4_SUPPORT:
+        return AMXInt4_KGroup_MOE
+    if _HAS_AVXVNNI256_RAW_INT4_SUPPORT and _HOST_HAS_AVX_VNNI and avxvnni_group_supported:
+        return AVXVNNI256RawInt4_MOE
+    if _HAS_AVX2_RAWINT4_SUPPORT:
+        return AVX2RawInt4_MOE
+    return None
+
+
+def _select_mxfp4_backend():
+    """Select MXFP4 backend: AMX/AVX-512 (preferred) > AVX2 (fallback).
+
+    Override with KT_MXFP4_BACKEND=avx2|amx.
+    Returns None if no MXFP4 backend is available.
+    """
+    forced = os.getenv("KT_MXFP4_BACKEND", "").strip().lower()
+
+    if forced == "amx":
+        if not _HAS_MXFP4_SUPPORT:
+            raise RuntimeError(
+                "KT_MXFP4_BACKEND=amx requested, but AMXFP4_KGroup_MOE is not compiled in. "
+                "Recompile with AVX512F + AVX512BW + AVX512_BF16 enabled."
+            )
+        return AMXFP4_KGroup_MOE
+
+    if forced == "avx2":
+        if not _HAS_AVX2_MXFP4_SUPPORT:
+            raise RuntimeError(
+                "KT_MXFP4_BACKEND=avx2 requested, but AVX2MXFP4_MOE is not compiled in. "
+                "Recompile with AVX2 + FMA enabled."
+            )
+        return AVX2MXFP4_MOE
+
+    if _HAS_MXFP4_SUPPORT:
+        return AMXFP4_KGroup_MOE
+    if _HAS_AVX2_MXFP4_SUPPORT:
+        return AVX2MXFP4_MOE
+    return None
+
+
+def _select_mxfp8_backend():
+    """Select MXFP8 backend: AMX/AVX-512 (preferred) > AVX2 (fallback).
+
+    Override with KT_MXFP8_BACKEND=avx2|amx.
+    Returns None if no MXFP8 backend is available.
+    """
+    forced = os.getenv("KT_MXFP8_BACKEND", "").strip().lower()
+
+    if forced == "amx":
+        if not _HAS_MXFP8_SUPPORT:
+            raise RuntimeError(
+                "KT_MXFP8_BACKEND=amx requested, but AMXMXFP8_KGroup_MOE is not compiled in. "
+                "Recompile with AVX512F + AVX512BW + AVX512_BF16 + AVX512_VBMI enabled."
+            )
+        if not _host_has_cpu_flag("amx_tile", "amx_bf16"):
+            raise RuntimeError(
+                "KT_MXFP8_BACKEND=amx requested, but the host CPU lacks AMX (amx_tile / amx_bf16). "
+                "This would SIGILL at first forward. Unset the env to fall back to AVX2."
+            )
+        return AMXMXFP8_KGroup_MOE
+
+    if forced == "avx2":
+        if not _HAS_AVX2_MXFP8_SUPPORT:
+            raise RuntimeError(
+                "KT_MXFP8_BACKEND=avx2 requested, but AVX2MXFP8_MOE is not compiled in. "
+                "Recompile with AVX2 + FMA enabled."
+            )
+        return AVX2MXFP8_MOE
+
+    # Auto-select: prefer AMX iff the .so was built with it AND the runtime CPU has AMX.
+    # Compile-time-only check would SIGILL on AVX-512 CPUs lacking AMX (pre-Sapphire Rapids).
+    if _HAS_MXFP8_SUPPORT and _host_has_cpu_flag("amx_tile", "amx_bf16"):
+        return AMXMXFP8_KGroup_MOE
+    if _HAS_AVX2_MXFP8_SUPPORT:
+        return AVX2MXFP8_MOE
     return None
 
 
@@ -411,12 +541,28 @@ class NativeMoEWrapper(BaseMoEWrapper):
         max_deferred_experts_per_token: Optional[int] = None,
         method: str = "RAWINT4",
         numa_nodes: Optional[List[int]] = None,
+        swiglu_limit: float = 0.0,
+        swiglu_alpha: float = 0.0,
     ):
-        if method == "RAWINT4" and not _HAS_RAWINT4_SUPPORT:
+        self._swiglu_alpha = float(swiglu_alpha)
+        # Defence in depth: reject swiglu_limit on non-MXFP4/MXFP8 methods even
+        # if the experts.py guard is bypassed (e.g., by a future caller
+        # that constructs NativeMoEWrapper directly). Origin: kt-sglang 耦合.
+        if swiglu_limit != 0.0 and method not in ("MXFP4", "MXFP8"):
+            raise ValueError(
+                f"NativeMoEWrapper received swiglu_limit={swiglu_limit} with "
+                f"method={method!r}; the clamp only applies to MXFP4/MXFP8. "
+                f"This indicates a missing guard in the caller."
+            )
+        if method == "RAWINT4" and not (
+            _HAS_RAWINT4_SUPPORT or _HAS_AVX2_RAWINT4_SUPPORT or _HAS_AVXVNNI256_RAW_INT4_SUPPORT
+        ):
             raise RuntimeError(
                 "RAWINT4 backend not available. Required ISA:\n"
-                "  - AVX512F + AVX512BW (VNNI optional)\n"
-                "Please recompile kt_kernel_ext with AVX512 enabled."
+                "  - AVX512F + AVX512BW (for AMX backend), or\n"
+                "  - AVX2 + FMA (for AVX2 fallback backend)\n"
+                "AVX-VNNI-256 will be selected automatically when available on the current CPU.\n"
+                "Please recompile kt_kernel_ext with AVX512 or AVX2 enabled."
             )
         if method == "FP8" and not _HAS_FP8_SUPPORT and not _HAS_AVX2_FP8_SUPPORT:
             raise RuntimeError(
@@ -444,6 +590,20 @@ class NativeMoEWrapper(BaseMoEWrapper):
                 "Please recompile kt_kernel_ext with GPTQ INT4 support enabled.\n"
                 "AVX-VNNI-256 will be selected automatically when available on the current CPU."
             )
+        if method == "MXFP4" and not (_HAS_MXFP4_SUPPORT or _HAS_AVX2_MXFP4_SUPPORT):
+            raise RuntimeError(
+                "MXFP4 backend not available. Required ISA (any one of):\n"
+                "  - AVX512F + AVX512BW + AVX512_BF16 (for AMX/AVX-512 backend)\n"
+                "  - AVX2 + FMA (for AVX2 fallback backend)\n"
+                "Please recompile kt_kernel_ext with one of the above enabled."
+            )
+        if method == "MXFP8" and not (_HAS_MXFP8_SUPPORT or _HAS_AVX2_MXFP8_SUPPORT):
+            raise RuntimeError(
+                "MXFP8 backend not available. Required ISA (any one of):\n"
+                "  - AVX512F + AVX512BW + AVX512_BF16 + AVX512_VBMI (for AMX/AVX-512 backend)\n"
+                "  - AVX2 + FMA (for AVX2 fallback backend)\n"
+                "Please recompile kt_kernel_ext with one of the above enabled."
+            )
 
         super().__init__(
             layer_idx=layer_idx,
@@ -460,22 +620,11 @@ class NativeMoEWrapper(BaseMoEWrapper):
             max_deferred_experts_per_token=max_deferred_experts_per_token,
             method=method,
             numa_nodes=numa_nodes,
+            swiglu_limit=swiglu_limit,
         )
 
         if NativeMoEWrapper._native_loader_instance is None:
-            if method == "RAWINT4":
-                NativeMoEWrapper._native_loader_instance = CompressedSafeTensorLoader(weight_path)
-            elif method == "FP8":
-                NativeMoEWrapper._native_loader_instance = FP8SafeTensorLoader(weight_path)
-            elif method == "FP8_PERCHANNEL":
-                # Use FP8SafeTensorLoader with per-channel scale format
-                NativeMoEWrapper._native_loader_instance = FP8SafeTensorLoader(weight_path, scale_suffix="weight_scale")
-            elif method == "BF16":
-                NativeMoEWrapper._native_loader_instance = BF16SafeTensorLoader(weight_path)
-            elif method == "GPTQ_INT4":
-                NativeMoEWrapper._native_loader_instance = GPTQSafeTensorLoader(weight_path)
-            else:
-                raise NotImplementedError(f"Unsupported method for NativeMoEWrapper: {method}")
+            NativeMoEWrapper._native_loader_instance = NativeMoEWrapper._create_loader(method, weight_path)
         self.loader = NativeMoEWrapper._native_loader_instance
 
         self.gate_weights = None
@@ -484,6 +633,44 @@ class NativeMoEWrapper(BaseMoEWrapper):
         self.gate_scales = None
         self.up_scales = None
         self.down_scales = None
+
+    @staticmethod
+    def _create_loader(method: str, weight_path: str):
+        if method == "RAWINT4":
+            return CompressedSafeTensorLoader(weight_path)
+        elif method == "FP8":
+            return FP8SafeTensorLoader(weight_path)
+        elif method == "FP8_PERCHANNEL":
+            return FP8SafeTensorLoader(weight_path, scale_suffix="weight_scale")
+        elif method == "BF16":
+            return BF16SafeTensorLoader(weight_path)
+        elif method == "GPTQ_INT4":
+            return GPTQSafeTensorLoader(weight_path)
+        elif method == "MXFP4":
+            return MXFP4SafeTensorLoader(weight_path)
+        elif method == "MXFP8":
+            return MXFP8SafeTensorLoader(weight_path)
+        else:
+            raise NotImplementedError(f"Unsupported method for NativeMoEWrapper: {method}")
+
+    @staticmethod
+    def _release_loader(layer_idx: int = -1):
+        if NativeMoEWrapper._native_loader_instance is not None:
+            NativeMoEWrapper._native_loader_instance.close_all_handles()
+            NativeMoEWrapper._native_loader_instance = None
+            if layer_idx >= 0:
+                logger.info(
+                    "[KT] Released NativeMoEWrapper loader after layer %d: "
+                    "safetensors mmap handles freed.", layer_idx,
+                )
+            else:
+                logger.info(
+                    "[KT] Released NativeMoEWrapper loader: safetensors mmap handles freed."
+                )
+
+    @staticmethod
+    def force_release_loader():
+        NativeMoEWrapper._release_loader()
 
     def load_weights_from_tensors(
         self,
@@ -497,14 +684,37 @@ class NativeMoEWrapper(BaseMoEWrapper):
     def load_weights(self, physical_to_logical_map_cpu: torch.Tensor):
         import time
 
+        if NativeMoEWrapper._native_loader_instance is None:
+            t_recreate_start = time.time()
+            NativeMoEWrapper._native_loader_instance = NativeMoEWrapper._create_loader(
+                self.method, self.weight_path
+            )
+            self.loader = NativeMoEWrapper._native_loader_instance
+            t_recreate_elapsed = (time.time() - t_recreate_start) * 1000
+            logger.info(
+                "[KT] Recreated NativeMoEWrapper loader for layer %d (took %.1fms)",
+                self.layer_idx, t_recreate_elapsed,
+            )
+        else:
+            self.loader = NativeMoEWrapper._native_loader_instance
+
         t0 = time.time()
-        base_key = f"model.layers.{self.layer_idx}"
-        try:
-            weights = self.loader.load_experts(base_key)
-        except (ValueError, KeyError):
-            # For VL/multimodal models (e.g. Qwen3.5) with 'language_model' prefix
-            base_key = f"model.language_model.layers.{self.layer_idx}"
-            weights = self.loader.load_experts(base_key)
+        _candidates = [
+            f"model.layers.{self.layer_idx}",
+            f"language_model.model.layers.{self.layer_idx}",
+            f"model.language_model.layers.{self.layer_idx}",
+        ]
+        weights = None
+        for base_key in _candidates:
+            try:
+                weights = self.loader.load_experts(base_key)
+                break
+            except (ValueError, KeyError):
+                continue
+        if weights is None:
+            raise ValueError(
+                f"No experts found for layer {self.layer_idx} under any prefix: {_candidates}"
+            )
         t1 = time.time()
 
         # Keep individual tensors instead of stacking - avoid expensive memory copy
@@ -541,6 +751,13 @@ class NativeMoEWrapper(BaseMoEWrapper):
                     self.up_scales = [t.to(torch.float32).contiguous() for t in weights["up_scale"]]
                     self.down_scales = [t.to(torch.float32).contiguous() for t in weights["down_scale"]]
                 assert self.gate_scales[0].dtype == torch.float32, "Expected float32 scales for FP8_PERCHANNEL"
+            elif self.method == "MXFP4":
+                # ue8m0 is losslessly representable in bf16 (8-bit exponent, 0 mantissa);
+                # the loader has already done that conversion.
+                assert self.gate_scales[0].dtype == torch.bfloat16, "Expected bf16 scales for MXFP4"
+            elif self.method == "MXFP8":
+                # ue8m0 scales stay as uint8; C++ convert_ue8m0_to_fp32 handles conversion.
+                assert self.gate_scales[0].dtype == torch.uint8, "Expected uint8 (ue8m0) scales for MXFP8"
 
         t2 = time.time()
 
@@ -571,6 +788,20 @@ class NativeMoEWrapper(BaseMoEWrapper):
         moe_config.layer_idx = self.layer_idx
         moe_config.pool = self.cpu_infer.backend_
         moe_config.max_len = self.chunked_prefill_size
+        # V4-Flash 2604B SwiGLU clamp; 0.0 = disabled (default for non-MXFP4
+        # paths). Read by `act_fn` in operators/amx/la/amx.hpp via
+        # `apply_activation` in operators/amx/moe_base.hpp. Re-checked here
+        # (defence in depth) so a future caller that bypasses both the
+        # experts.py and the __init__ guards still cannot apply the clamp
+        # on RAWINT4 / FP8 / BF16 / FP8_PERCHANNEL / GPTQ_INT4 paths.
+        # Origin: kt-sglang 耦合.
+        if self.swiglu_limit != 0.0 and self.method not in ("MXFP4", "MXFP8"):
+            raise ValueError(
+                f"NativeMoEWrapper.load_weights: swiglu_limit="
+                f"{self.swiglu_limit} with method={self.method!r}; clamp is "
+                f"only valid for MXFP4/MXFP8."
+            )
+        moe_config.swiglu_limit = self.swiglu_limit
 
         # Use gate_projs instead of gate_proj for per-expert pointers
         moe_config.gate_projs = gate_ptrs
@@ -589,7 +820,44 @@ class NativeMoEWrapper(BaseMoEWrapper):
             moe_config.quant_config.bits = 4
             moe_config.quant_config.group_size = group_size
             moe_config.quant_config.zero_point = False
-            self.moe = AMXInt4_KGroup_MOE(moe_config)
+            backend_cls = _select_rawint4_backend(group_size)
+            if backend_cls is None:
+                raise RuntimeError(
+                    "No RAWINT4 backend is available after runtime selection for "
+                    f"group_size={group_size}. AMX (AMXInt4_KGroup_MOE) is preferred; "
+                    f"AVX-VNNI-256 supports positive multiples of 32 up to "
+                    f"{_AVXVNNI256_RAW_INT4_MAX_GROUP_SIZE}; AVX2 (AVX2RawInt4_MOE) is used as the final fallback."
+                )
+            self.moe = backend_cls(moe_config)
+        elif self.method == "MXFP4":
+            # MXFP4: E2M1 nibble-packed weights, ue8m0/bf16 per-32 group scale
+            # (e.g. DeepSeek-V4-Flash routed experts)
+            group_size = self.hidden_size // self.gate_scales[0].shape[1]
+            moe_config.quant_config.bits = 4
+            moe_config.quant_config.group_size = group_size
+            moe_config.quant_config.zero_point = False
+            backend_cls = _select_mxfp4_backend()
+            if backend_cls is None:
+                raise RuntimeError(
+                    "No MXFP4 backend available after runtime selection. "
+                    "Compile with AVX512_BF16 (AMXFP4_KGroup_MOE) or AVX2 (AVX2MXFP4_MOE)."
+                )
+            self.moe = backend_cls(moe_config)
+        elif self.method == "MXFP8":
+            # MXFP8: FP8 E4M3fn byte weights, ue8m0/uint8 per-32 group scale
+            # (e.g. MiniMax-M3-Preview)
+            group_size = self.hidden_size // self.gate_scales[0].shape[1]
+            moe_config.quant_config.bits = 8
+            moe_config.quant_config.group_size = group_size
+            moe_config.quant_config.zero_point = False
+            moe_config.swiglu_alpha = getattr(self, "_swiglu_alpha", 0.0)
+            backend_cls = _select_mxfp8_backend()
+            if backend_cls is None:
+                raise RuntimeError(
+                    "No MXFP8 backend available after runtime selection. "
+                    "Compile with AVX512+VBMI (AMXMXFP8_KGroup_MOE) or AVX2 (AVX2MXFP8_MOE)."
+                )
+            self.moe = backend_cls(moe_config)
         elif self.method == "FP8":
             moe_config.quant_config.bits = 8
             moe_config.quant_config.group_size = 128
@@ -639,6 +907,8 @@ class NativeMoEWrapper(BaseMoEWrapper):
             del self.gate_scales
             del self.up_scales
             del self.down_scales
+
+        NativeMoEWrapper._release_loader(layer_idx=self.layer_idx)
         t6 = time.time()
 
         print(

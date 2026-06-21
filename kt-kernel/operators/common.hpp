@@ -308,6 +308,22 @@ struct GeneralMOEConfig {
 
   int max_cache_depth = 1;
 
+  // SwiGLU asymmetric clamp applied to gate/up before silu*up. 0.0f =
+  // disabled (default for all non-MXFP4 paths). Set to e.g. 10.0f for
+  // DeepSeek V4-Flash 2604B routed experts, matching the trtllm
+  // `gemm1_clamp_limit` and the sglang deep_gemm path's
+  // `_apply_swiglu_limit`:
+  //   gate = clamp(gate, max=limit)            // one-sided (silu input)
+  //   up   = clamp(up, min=-limit, max=limit)  // symmetric
+  // Read by `act_fn` in la/amx.hpp; non-zero only for MXFP4 today.
+  // Origin: kt-sglang 耦合 (carries the V4-2604B limit set by sglang side).
+  float swiglu_limit = 0.0f;
+
+  // MiniMax M3 "swigluoai" activation: gate * sigmoid(gate * alpha) * (up + 1).
+  // When alpha > 0, act_fn uses the swigluoai formula with symmetric clamp on
+  // both gate and up (±swiglu_limit). 0.0f = disabled (standard silu path).
+  float swiglu_alpha = 0.0f;
+
   GeneralMOEConfig() {}
 
   GeneralMOEConfig(int expert_num, int routed_expert_num, int hidden_size, int intermediate_size)
