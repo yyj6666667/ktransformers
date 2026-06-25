@@ -25,7 +25,7 @@ jobs:
   build-and-publish-sglang-kt:
     name: Build & publish sglang-kt
     runs-on: [self-hosted, linux, x64]
-    if: github.repository == 'kvcache-ai/ktransformers' && github.ref == 'refs/heads/main'
+    if: (github.repository == 'kvcache-ai/ktransformers' || github.repository == 'yyj6666667/ktransformers') && github.ref == 'refs/heads/main'
     environment: prod
     permissions:
       id-token: write
@@ -185,7 +185,7 @@ jobs:
     name: Publish kt-kernel to PyPI
     needs: [build-and-publish-sglang-kt, build-kt-kernel]
     runs-on: [self-hosted, linux, x64]
-    if: github.repository == 'kvcache-ai/ktransformers' && github.ref == 'refs/heads/main'
+    if: (github.repository == 'kvcache-ai/ktransformers' || github.repository == 'yyj6666667/ktransformers') && github.ref == 'refs/heads/main'
     environment: prod
     permissions:
       id-token: write  # For trusted publishing (OIDC)
@@ -196,6 +196,11 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: artifacts/
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.12'
 
       - name: Organize wheels into dist/
         run: |
