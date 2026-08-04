@@ -2,6 +2,58 @@
 
 This directory contains scripts for building and distributing KTransformers Docker images with standardized naming conventions.
 
+## DeepSeek-V4-Flash one-click deployment
+
+For an end-user walkthrough, see the
+[DeepSeek-V4-Flash Docker Quick Start](../doc/en/DeepSeek-V4-Flash.md)
+([中文](../doc/zh/DeepSeek-V4-Flash.md)).
+
+The `dsv4` target is independent from the legacy inference/SFT packaging
+targets below. It is built from the checked-out KTransformers source and its
+pinned SGLang submodule, rather than cloning a moving `main` branch during the
+image build. End users pull the resulting image; they do not clone this
+repository or use Compose.
+
+Maintainers build a traceable local candidate from the repository root:
+
+```bash
+docker buildx build \
+  --file docker/Dockerfile \
+  --target dsv4 \
+  --build-arg IMAGE_VERSION=dsv4-flash-cu128 \
+  --build-arg VCS_REF="$(git rev-parse HEAD)" \
+  --build-arg SGLANG_REF="$(git -C third_party/sglang rev-parse HEAD)" \
+  --build-arg BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  --tag ktransformers:dsv4-flash-cu128-candidate \
+  --load \
+  .
+```
+
+The image:
+
+- Reads a host model mounted read-only at `/model`.
+- Uses the validated DeepSeek-V4-Flash launch settings and includes an image
+  healthcheck backed by `/health_generate`.
+- Defaults to stable hybrid CPU/GPU inference with lazy layerwise prefill for
+  requests of at least 2048 tokens, a 4096-token prefill chunk, and an SWA
+  full-token ratio of 0.4.
+- Uses one image for SM80, SM86, SM89, SM90, SM100, and SM120. SGLang includes
+  multiple architecture-specific binary kernels; the Torch and FlashInfer JIT
+  settings for the detected GPU are selected at container startup.
+
+The optional `compose.dsv4.yml` remains available for maintainers doing local
+build and integration testing:
+
+```bash
+export MODEL_DIR=/absolute/path/to/DeepSeek-V4-Flash
+docker compose -f docker/compose.dsv4.yml up -d --build --wait
+docker compose -f docker/compose.dsv4.yml logs -f server
+docker compose -f docker/compose.dsv4.yml down
+```
+
+For repeatable local configuration, copy `dsv4.env.example` to the ignored
+`dsv4.env` file and pass it with `--env-file docker/dsv4.env`.
+
 ## Overview
 
 The packaging system provides:

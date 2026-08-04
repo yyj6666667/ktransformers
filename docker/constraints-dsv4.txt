@@ -1,0 +1,13 @@
+# Keep the CUDA/PyTorch stack selected by the dedicated install step intact
+# while pip resolves SGLang's broad runtime requirements.
+torch==2.9.1
+torchvision==0.24.1
+torchaudio==2.9.1
+sgl-kernel==0.3.21
+flashinfer-python==0.6.9
+flashinfer-cubin==0.6.9
+transformers==4.57.1
+tilelang==0.1.10
+apache-tvm-ffi==0.1.11
+cuda-python==13.2.0
+nvidia-cutlass-dsl==4.6.1
