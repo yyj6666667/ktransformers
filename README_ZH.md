@@ -17,6 +17,7 @@ KTransformers 是一个专注于通过 CPU-GPU 异构计算实现大语言模型
 
 ## 🔥 更新
 
+* **2026 年 5 月 2 日**：支持 DeepSeek-V4-Flash！（[Docker 快速上手](./doc/zh/DeepSeek-V4-Flash.md)）
 * **2026 年 4 月 30 日**：KTransformers v0.6.1 更新 kt-kernel 推理和 SFT 文档，提供独立的[推理](./kt-kernel/README.md)和 [SFT Quick Start](./doc/en/SFT/KTransformers-Fine-Tuning_Quick-Start.md)入口。
 * **2025 年 12 月 5 日**：支持原生 Kimi-K2-Thinking 推理（[教程](./doc/en/kt-kernel/Kimi-K2-Thinking-Native.md)）
 * **2025 年 11 月 6 日**：支持 Kimi-K2-Thinking 推理（[教程](./doc/en/Kimi-K2-Thinking.md)）和微调（[教程](./doc/en/SFT_Installation_Guide_KimiK2.md)）

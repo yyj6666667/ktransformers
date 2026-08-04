@@ -1,209 +1,258 @@
-# Running DeepSeek-V4-Flash with SGLang and KT-Kernel
+# Run DeepSeek-V4-Flash with Docker
 
-This tutorial demonstrates how to run **DeepSeek-V4-Flash** model inference using SGLang integrated with KT-Kernel for CPU-GPU heterogeneous inference. The hybrid path splits MXFP4 routed experts between CPU (KT-Kernel `cpuinfer`) and GPU (sglang `kt-num-gpu-experts`), enabling deployment on consumer-grade hardware.
+[中文教程](../zh/DeepSeek-V4-Flash.md)
 
-## Table of Contents
+You do not need to install Python, compile KTransformers, or select a different
+image for each GPU generation. The image detects the GPU and selects the
+appropriate kernels automatically.
 
-- [Running DeepSeek-V4-Flash with SGLang and KT-Kernel](#running-deepseek-v4-flash-with-sglang-and-kt-kernel)
-  - [Table of Contents](#table-of-contents)
-  - [Hardware Requirements](#hardware-requirements)
-  - [Prerequisites](#prerequisites)
-  - [Step 1: Download Model Weights](#step-1-download-model-weights)
-  - [Step 2: Quantize CPU Weights (Optional, for AMXINT4 mode)](#step-2-quantize-cpu-weights-optional-for-amxint4-mode)
-  - [Step 3: Launch SGLang Server](#step-3-launch-sglang-server)
-    - [Launch Command (Single RTX 5090 Example)](#launch-command-single-rtx-5090-example)
-    - [Optional: Enable MTP (Multi-Token Prediction) Speculative Decoding](#optional-enable-mtp-multi-token-prediction-speculative-decoding)
-  - [Step 4: Send Inference Requests](#step-4-send-inference-requests)
-    - [Decode](#decode)
-    - [Interactive Chat (kt chat)](#interactive-chat-kt-chat)
-  - [Notes for Skylake / older Xeons & single-stream tuning caveats](#notes-for-skylake--older-xeons--single-stream-tuning-caveats)
+## Before you start
 
-## Hardware Requirements
+You need:
 
-**Validated Configuration (this tutorial):**
-- **GPU**: 1× NVIDIA RTX 5090 (32GB VRAM, SM_120)
-- **CPU**: x86 CPU with AVX512 support
-- **RAM**: ≥256GB system memory
-- **Storage**: ~340GB for model weights
+- x86-64 Linux
+- One NVIDIA GPU; RTX 5090 is validated and at least 32 GB VRAM is recommended
+- A CPU with AVX512F
+- At least 256 GiB of system memory
+- About 150 GB for the model; keep at least 200 GB free
+- Docker and NVIDIA Container Toolkit
 
-**architectures** (auto-detected at startup; non-validated configurations should work but have not been benchmarked end-to-end):
-
-| Arch | Compute Cap | MXFP4 MoE | NSA sparse MLA | Validated |
-|------|------------|-----------|----------------|-----------|
-| Hopper (H100 / H200) | SM_90 | triton_kernels | flash_mla wheel | — |
-| Datacenter Blackwell (B100 / B200) | SM_100 | trtllm-fp4 | Triton fallback | — |
-| Consumer Blackwell (RTX 5090) | SM_120 | triton_kernels | Triton fallback | ✓ |
-| Ada Lovelace (RTX 4090 / L20 / L40) | SM_89 | triton_kernels | Triton fallback | ✓ |
-| Ampere (A100 / A6000) | SM_80 / SM_86 | triton_kernels | Triton fallback | Now supported |
-
-
-## Prerequisites
-
-1. **KT-Kernel installed**:
-   ```bash
-   git clone https://github.com/kvcache-ai/ktransformers.git
-   cd ktransformers
-   git submodule update --init --recursive
-   cd kt-kernel && ./install.sh
-   ```
-
-2. **SGLang installed** (kvcache-ai fork):
-   ```bash
-   ./install.sh   # from ktransformers root
-   ```
-
-3. **CUDA 12.8+** and **flashinfer ≥ 0.6.9** (`flashinfer-python` and `flashinfer-cubin` must be the same version):
-   ```bash
-   pip install --upgrade flashinfer-python flashinfer-cubin
-   ```
-   This upgrade is required (even though `sglang-kt` pins `flashinfer_python==0.6.3`) because V4-Flash's MXFP4 MoE module imports `mxfp8_quantize`, `trtllm_fp4_block_scale_routed_moe`, etc., which only exist in flashinfer ≥ 0.6.9.
-
-4. **transformers==4.57.1** (V4-Flash is incompatible with the 5.x series):
-   ```bash
-   pip install "transformers==4.57.1"
-   ```
-   `transformers` 5.x adds default-valued fields to `PretrainedConfig` that make `DeepSeekV4Config`'s dataclass declaration raise `TypeError: non-default argument 'quantization_config' follows default argument` at import time. `sglang-kt`'s pyproject does not pin `transformers`, so a fresh `pip install` will pull the latest 5.x and break server startup; pinning explicitly to `4.57.1` is required until the upstream fix lands.
-
-5. **tilelang** (manual install — required for the NSA sparse-MLA tilelang indexer path used on non-Hopper GPUs):
-   ```bash
-   pip install tilelang "apache-tvm-ffi<0.1.12"
-   ```
-   `sglang-kt`'s pyproject does not declare `tilelang` as a dependency, so `pip install ./python[all]` will not pull it in. Validated with `tilelang==0.1.8`.
-
-   > **Note:** Constrain `apache-tvm-ffi<0.1.12`. The standalone `apache-tvm-ffi` 0.1.12 wheel collides with the TVM FFI runtime bundled inside `tilelang`, so importing `tilelang` aborts with `TypeAttr __ffi_repr__ is already registered for type index 130` and the SGLang scheduler dies on startup. `apache-tvm-ffi==0.1.11` does not register the conflicting attribute and starts cleanly; pin until the upstream duplicate-registration fix lands.
-
-
-## Step 1: Download Model Weights
+Confirm that containers can access the GPU:
 
 ```bash
-mkdir -p /path/to/models
-huggingface-cli download deepseek-ai/DeepSeek-V4-Flash \
-  --local-dir /path/to/models/DeepSeek-V4-Flash
+nvidia-smi
+docker run --rm --device nvidia.com/gpu=0 \
+  nvidia/cuda:12.8.1-base-ubuntu22.04 nvidia-smi
 ```
 
-## Step 2: Quantize CPU Weights (Optional, for AMXINT4 mode)
+If the second command cannot see the GPU, install or repair
+[NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)
+before continuing.
 
-This step is only needed if you want to run the CPU experts in **AMXINT4** mode instead (e.g., on Intel Xeon with AMX where INT4 is preferred over MXFP4).
+## First start
 
-### Conversion Command
-
-For a 4-NUMA system with 64 physical cores assigned to CPU inference:
+Enter the downloaded model directory. Replace this path with your actual path:
 
 ```bash
-cd /path/to/ktransformers/kt-kernel
-
-python scripts/convert_cpu_weights_ds4.py \
-  --input-path /path/to/models/DeepSeek-V4-Flash \
-  --input-type fp4 \
-  --output /path/to/models/DeepSeek-V4-Flash-AMXINT4 \
-  --quant-method int4 \
-  --cpuinfer-threads 64 \
-  --threadpool-count 4 \
-  --no-merge-safetensor
+cd /path/to/DeepSeek-V4-Flash
 ```
 
-The script auto-detects `model_type=deepseek_v4` and `expert_dtype=fp4` from `config.json`, dequantizes the MXFP4 routed experts (group size 32) on GPU, and re-quantizes them to AMX-INT4 layout on CPU. Both HF (`model.layers.{L}.mlp.experts.{E}.{proj}.weight`) and V4 inference (`layers.{L}.ffn.experts.{E}.{w1,w2,w3}.weight`) key formats are supported.
-
-To use the converted weights, replace the relevant flags in Step 3's launch command:
+The directory should contain `config.json` and the `.safetensors` weights:
 
 ```bash
-  --kt-weight-path /path/to/models/DeepSeek-V4-Flash-AMXINT4 \
-  --kt-method AMXINT4 \
+ls config.json *.safetensors | head
 ```
 
-## Step 3: Launch SGLang Server
-
-### Launch Command (Single RTX 5090 Example)
+Copy the complete command below. No other value needs to be changed:
 
 ```bash
-export FLASHINFER_CUDA_ARCH_LIST=12.0a
-export TORCH_CUDA_ARCH_LIST="12.0+PTX"
-export SGLANG_DSV4_MODE=2604
-export SGLANG_DSV4_2604_SUBMODE=2604B
-
-python -m sglang.launch_server \
-  --host 0.0.0.0 --port 30000 \
-  --model /path/to/models/DeepSeek-V4-Flash \
-  --kt-weight-path /path/to/models/DeepSeek-V4-Flash \
-  --kt-method MXFP4 \
-  --kt-num-gpu-experts 10 \
-  --kt-cpuinfer 60 \
-  --kt-threadpool-count 2 \
-  --kt-gpu-prefill-token-threshold 4096 \
-  --kt-enable-dynamic-expert-update \
-  --tensor-parallel-size 1 \
-  --context-length 16384 \
-  --attention-backend flashinfer \
-  --mem-fraction-static 0.85 \
-  --chunked-prefill-size 2048 \
-  --max-prefill-tokens 2048 \
-  --max-running-requests 2 \
-  --watchdog-timeout 1200 \
-  --disable-shared-experts-fusion \
-  --trust-remote-code \
-  --cuda-graph-bs 1 \
-  --cuda-graph-max-bs 1 \
-  --disable-radix-cache \
-  --skip-server-warmup
+docker run --name ktransformers-dsv4 \
+  --device nvidia.com/gpu=0 --ipc host -p 30000:30000 \
+  --cap-add SYS_NICE \
+  -v "$PWD":/model:ro \
+  ghcr.io/kvcache-ai/ktransformers:dsv4-flash
 ```
 
-Decode throughput: **20+ tok/s** on a single RTX 5090.
+Docker downloads the image, loads the model, and compiles the CUDA kernels for
+the current GPU. The first start may take several minutes. As long as logs are
+still appearing, do not start a second container.
 
-It takes about 4-5 minutes to start the server (weight load + CUDA Graph capture).
+`SYS_NICE` lets the CPU-expert workers bind memory to the correct NUMA nodes; it
+does not grant the container full administrative access to the host.
 
-See [KT-Kernel Parameters](https://github.com/kvcache-ai/ktransformers/tree/main/kt-kernel#kt-kernel-parameters) for detailed parameter tuning guidelines.
+The model is mounted read-only, so the container cannot modify the host model
+files. The image uses stable CPU/GPU hybrid inference and enables lazy
+layerwise prefill by default for requests of at least 2,048 tokens.
 
-### Optional: Enable MTP (Multi-Token Prediction) Speculative Decoding
+## Check that the server is ready
 
-V4-Flash ships a NextN draft head that can be run as EAGLE-style speculative decoding for ~1.2× throughput on single-request decode (validated 26.5 → 32.74 tok/s on 8× RTX 5090, 90% accept rate at chain depth 1).
-
-Append the following flags to the launch command above:
+Keep the first terminal open and run this in a second terminal:
 
 ```bash
-  --speculative-algorithm EAGLE \
-  --speculative-num-steps 3 \
-  --speculative-eagle-topk 1 \
-  --speculative-num-draft-tokens 4 \
-  --speculative-moe-runner-backend auto \
+docker ps --filter name=ktransformers-dsv4
 ```
 
-## Step 4: Send Inference Requests
-
-### Decode
+When the status shows `healthy`, run:
 
 ```bash
-curl -s -X POST http://127.0.0.1:30000/generate \
-  -H "Content-Type: application/json" \
+curl --fail --silent http://127.0.0.1:30000/health >/dev/null \
+  && echo "DeepSeek-V4-Flash is ready"
+```
+
+If the status is still `health: starting`, the model is still loading. Continue
+following the logs in the first terminal.
+
+## Send your first request
+
+```bash
+curl -s http://127.0.0.1:30000/generate \
+  -H 'Content-Type: application/json' \
   -d '{
-    "text": "Explain quantum computing in detail:",
-    "sampling_params": {"temperature": 0.0, "max_new_tokens": 256}
+    "text": "Explain why the sky is blue in simple terms.",
+    "sampling_params": {
+      "temperature": 0.0,
+      "max_new_tokens": 64
+    }
   }'
 ```
 
-### Interactive Chat (kt chat)
+The OpenAI-compatible API is also available at:
 
-The `kt` CLI ships with an OpenAI-compatible chat client that talks to the SGLang server's `/v1/chat/completions` endpoint:
-
-```bash
-kt chat --host 127.0.0.1 --port 30000 --temperature 0.7 --max-tokens 2048
+```text
+http://127.0.0.1:30000/v1
 ```
 
-## Notes for Skylake / older Xeons & single-stream tuning caveats
+## Stop and restart
 
-The following notes are from a community-validated single-workstation deployment on **1× RTX 5090 + 2× Intel Xeon Gold 6138 (Skylake-SP, 40 physical cores total, AVX-512, no AMX tile, no VNNI)**, 256 GB DDR4-2400. All numbers below are single-request decode with `--kt-method AMXINT4`, top-4 routing, coding quality verified against the unquantized reference.
+Press `Ctrl+C` in the terminal showing the server logs to stop the container.
 
-**AMXINT4 does not require an AMX Xeon.** Despite the name, the INT4 expert kernel runs on `AVX512F + AVX512BW` and works on **Skylake-SP / Cascade Lake** (no AMX tile, no VNNI required) — not only Sapphire-Rapids-class CPUs. Measured **~28 tok/s** single-stream on the box above. This is useful for the large installed base of older, inexpensive dual-socket Xeons.
+For later starts, do not repeat the full `docker run` command. Run:
 
-**Dual-socket tuning:**
-- Set `--kt-cpuinfer` to the **physical** core count (here `40`) — one thread per physical core — with `--kt-threadpool-count 2` (one pool per NUMA node) and NUMA-sharded weights.
-- Prefer **node-local allocation** over `numactl --interleave=all` when the weights are per-socket sharded: node-local reads avoid cross-socket traffic, which on this bandwidth-bound decode was worth roughly +14% (25 → ~28 tok/s).
+```bash
+docker start -a ktransformers-dsv4
+```
 
-**Single-stream configs that REDUCED throughput on this bandwidth-bound box (measure before assuming):**
+The container retains its first-run JIT cache, so later starts are normally
+faster.
 
-| Config | Effect (here) | Mechanism |
-|--------|---------------|-----------|
-| EAGLE / MTP speculative decode | ~28 → 27.2 tok/s (net-negative) | The validated `26.5 → 32.74` above is on **8× RTX 5090**. On a **single-GPU, CPU-expert-bandwidth-bound** box, verifying a batch of draft tokens that route to *different* experts multiplies the CPU expert reads that are the bottleneck, so the benefit can **invert**. Worth measuring against your actual bottleneck. |
-| `--kt-cpuinfer` = 2× physical cores (hyperthreads) | ~28 → ~2.7 tok/s (≈10× slower) | HT oversubscription thrashes the bandwidth-bound AVX-512 kernel. Keep one thread per physical core. |
-| Extra GPU experts under AMXINT4 (`--kt-num-gpu-experts`) | small net loss on a single 5090 | The MXFP4-GPU path required alongside AMXINT4 costs more than offloading a few of 256 experts saves on this GPU. |
+To remove the container completely:
 
-**Bottom line for this hardware class:** single-stream decode is **DDR4-bandwidth-saturated** at ~28 tok/s (4-bit). Speculative decode and GPU-expert offload help when the bottleneck is elsewhere (multi-GPU, higher-bandwidth CPU), but not on a single-GPU, bandwidth-bound CPU-offload box — so measure on your own hardware rather than assuming the multi-GPU numbers transfer.
+```bash
+docker rm ktransformers-dsv4
+```
+
+Removing the container does not delete the host model or the downloaded Docker
+image.
+
+## Download the model
+
+If you do not have the model yet, one option is the Hugging Face CLI:
+
+```bash
+python3 -m pip install -U huggingface_hub
+hf download deepseek-ai/DeepSeek-V4-Flash \
+  --local-dir "$HOME/models/DeepSeek-V4-Flash"
+```
+
+After it finishes:
+
+```bash
+cd "$HOME/models/DeepSeek-V4-Flash"
+```
+
+Then return to “First start” and copy the `docker run` command.
+
+## Troubleshooting
+
+### The container name already exists
+
+You created the container previously. Start it again with:
+
+```bash
+docker start -a ktransformers-dsv4
+```
+
+To create it again from scratch, remove the stopped container first:
+
+```bash
+docker rm ktransformers-dsv4
+```
+
+### `/model/config.json` is missing
+
+The start command was run outside the model directory. Check:
+
+```bash
+pwd
+ls config.json
+```
+
+Then run the Docker command again.
+
+### The container cannot see an NVIDIA GPU
+
+Confirm that `nvidia-smi` works on the host, then repeat the Docker GPU check
+from “Before you start.” NVIDIA Container Toolkit is normally missing or
+misconfigured.
+
+If Docker reports `unknown device nvidia.com/gpu=0`, NVIDIA CDI is not enabled
+in that environment. Replace `--device nvidia.com/gpu=0` with `--gpus all` in
+the start command. If that also fails, configure Docker by following the NVIDIA
+Container Toolkit documentation.
+
+### Port 30000 is already in use
+
+After removing the old container, change the port mapping in the start command
+to:
+
+```bash
+-p 30001:30000
+```
+
+The left side is the host port; the right side is the container's fixed service
+port. Then access the server at `http://127.0.0.1:30001`.
+
+### CUDA runs out of memory
+
+By default, no routed experts are kept resident on the GPU. If you increased the
+GPU expert count manually, remove the old container and lower it:
+
+```bash
+docker rm ktransformers-dsv4
+```
+
+Then add this before the image name in the start command:
+
+```bash
+-e KT_GPU_EXPERTS=4
+```
+
+If necessary, use `0` or reduce `CONTEXT_LENGTH` as well.
+
+### Warnings appear in the log
+
+The first start loads optional dependencies and compiles JIT kernels, so some
+optional model components may print warnings. Use the container's `healthy`
+status and the health endpoint—not the absence of warnings—to decide whether
+startup succeeded.
+
+## Advanced configuration
+
+Most users do not need to change these values:
+
+| Environment variable | Default | Purpose |
+| --- | ---: | --- |
+| `PORT` | `30000` | HTTP server port |
+| `CONTEXT_LENGTH` | `16384` | Maximum context length |
+| `MEM_FRACTION` | `0.90` | Static GPU-memory fraction |
+| `KT_GPU_EXPERTS` | `0` | Number of GPU-resident experts; `0` keeps all routed experts on the CPU |
+| `KT_CPUINFER_THREADS` | Auto | CPU inference threads |
+| `KT_THREADPOOL_COUNT` | Auto | NUMA worker pools |
+| `KT_GPU_PREFILL_TOKEN_THRESHOLD` | `2048` | Requests at or above this token count use layerwise prefill; set `0` to disable it |
+| `CHUNKED_PREFILL_SIZE` | `4096` | Maximum number of tokens in one prefill scheduling round; must be a multiple of 256 |
+| `MAX_PREFILL_TOKENS` | `4096` | Maximum number of prefill tokens admitted by the scheduler |
+| `MAX_TOTAL_TOKENS` | automatic | Aggregate KV-token budget. Leave unset to use the profiled budget after layerwise-slot capacity is held out. |
+| `SWA_FULL_TOKENS_RATIO` | `0.4` | Ratio of SWA KV tokens to full-attention KV tokens; sized for the default 4096-token prefill chunk |
+| `ENABLE_MTP` | `0` | `1` experimentally enables MTP |
+
+Add settings as `-e NAME=VALUE` before the image name. For example:
+
+```bash
+docker run --name ktransformers-dsv4 \
+  --device nvidia.com/gpu=0 --ipc host -p 30000:30000 \
+  --cap-add SYS_NICE \
+  -v "$PWD":/model:ro \
+  -e CONTEXT_LENGTH=8192 \
+  ghcr.io/kvcache-ai/ktransformers:dsv4-flash
+```
+
+Layerwise prefill is enabled by default with
+`KT_GPU_PREFILL_TOKEN_THRESHOLD=2048`. The image uses
+`SWA_FULL_TOKENS_RATIO=0.4` so the SWA KV pool can serve the default
+4096-token prefill chunk. Set `KT_GPU_PREFILL_TOKEN_THRESHOLD=0` to disable the
+path. The KV-cache profiler holds out the capacity required for the two raw and
+two prepared layerwise slots, but does not allocate their tensors at startup.
+The first request that reaches the configured threshold allocates the slots and
+therefore has a one-time initialization cost. If that allocation does not fit
+in the currently available GPU memory, layerwise prefill is disabled for the
+running server and the request continues with hybrid CPU/GPU inference.

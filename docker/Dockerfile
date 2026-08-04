@@ -1,4 +1,5 @@
 ARG CUDA_VERSION=12.8.1
+ARG DSV4_BASE_IMAGE=nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04
 FROM docker.1ms.run/nvidia/cuda:${CUDA_VERSION}-cudnn-devel-ubuntu24.04 AS base
 
 ARG TARGETARCH
@@ -179,6 +180,137 @@ RUN conda tos accept --override-channels --channel https://repo.anaconda.com/pkg
 RUN conda config --add channels https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/main \
     && conda config --add channels https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/free \
     && conda config --set show_channel_urls yes
+
+########################################################
+########## DeepSeek-V4-Flash one-click image ############
+########################################################
+
+# This target is deliberately independent from the legacy framework target:
+# it is source-reproducible, has V4-compatible pins, and keeps nvcc for SGLang JIT.
+FROM ${DSV4_BASE_IMAGE} AS dsv4
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+ARG IMAGE_VERSION=dev
+ARG VCS_REF=unknown
+ARG SGLANG_REF=unknown
+ARG BUILD_DATE=unknown
+ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+ARG TORCH_VERSION=2.9.1
+ARG SGL_KERNEL_VERSION=0.3.21
+ARG FLASHINFER_VERSION=0.6.9
+ARG TRANSFORMERS_VERSION=4.57.1
+ARG TILELANG_VERSION=0.1.10
+ARG TVM_FFI_VERSION=0.1.11
+ARG CPUINFER_CUDA_ARCHS=80;86;89;90;100;120
+ARG BUILD_JOBS=16
+
+ENV CUDA_HOME=/usr/local/cuda \
+    DEBIAN_FRONTEND=noninteractive \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PYTHONUNBUFFERED=1 \
+    SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION=false \
+    MODEL_PATH=/model \
+    PORT=30000 \
+    PATH=/opt/venv/bin:/usr/local/bin:${PATH}
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        build-essential \
+        ca-certificates \
+        curl \
+        git \
+        libhwloc-dev \
+        libnuma-dev \
+        libopenmpi-dev \
+        numactl \
+        pkg-config \
+        software-properties-common \
+    && add-apt-repository -y ppa:deadsnakes/ppa \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+        python3.11 \
+        python3.11-dev \
+        python3.11-venv \
+    && rm -rf /var/lib/apt/lists/* \
+    && python3.11 -m venv /opt/venv
+
+RUN python -m pip config set global.index-url "${PIP_INDEX_URL}" \
+    && python -m pip install --upgrade setuptools wheel \
+    && python -m pip install "cmake>=3.31,<4" ninja
+
+COPY docker/requirements-dsv4.txt /tmp/requirements-dsv4.txt
+
+RUN python -m pip install \
+        "torch==${TORCH_VERSION}" \
+        "torchvision==0.24.1" \
+        "torchaudio==${TORCH_VERSION}" \
+        --index-url https://download.pytorch.org/whl/cu128 \
+        --extra-index-url "${PIP_INDEX_URL}" \
+        --retries 10 \
+        --timeout 120
+
+COPY docker/constraints-dsv4.txt /tmp/constraints-dsv4.txt
+
+RUN python -m pip install -c /tmp/constraints-dsv4.txt \
+        "sgl-kernel==${SGL_KERNEL_VERSION}" \
+        "flashinfer-python==${FLASHINFER_VERSION}" \
+        "flashinfer-cubin==${FLASHINFER_VERSION}" \
+        "transformers==${TRANSFORMERS_VERSION}" \
+        "tilelang==${TILELANG_VERSION}" \
+        "apache-tvm-ffi==${TVM_FFI_VERSION}" \
+        "cuda-python==13.2.0" \
+        "nvidia-cutlass-dsl==4.6.1" \
+    && grep -v '^quack-kernels==' \
+        /tmp/requirements-dsv4.txt \
+        > /tmp/requirements-dsv4-resolved.txt \
+    && python -m pip install \
+        -c /tmp/constraints-dsv4.txt \
+        -r /tmp/requirements-dsv4-resolved.txt \
+    && python -m pip install --no-deps "quack-kernels==0.2.4"
+
+COPY . /workspace/ktransformers
+
+RUN test -f /workspace/ktransformers/third_party/sglang/python/pyproject.toml \
+    && test -f /workspace/ktransformers/third_party/pybind11/CMakeLists.txt \
+    && export SGLANG_KT_VERSION="$(python -c "exec(open('/workspace/ktransformers/version.py').read()); print(__version__)")" \
+    && python -m pip install --no-deps \
+        /workspace/ktransformers/third_party/sglang/python \
+    && cd /workspace/ktransformers/kt-kernel \
+    && CPUINFER_BUILD_ALL_VARIANTS=1 \
+       CPUINFER_USE_CUDA=1 \
+       CPUINFER_CUDA_ARCHS="${CPUINFER_CUDA_ARCHS}" \
+       CPUINFER_PARALLEL="${BUILD_JOBS}" \
+       ./install.sh build \
+    && python -m pip install --no-deps /workspace/ktransformers
+
+COPY docker/verify-dsv4-env.py /usr/local/bin/verify-dsv4-env
+RUN chmod 0755 /usr/local/bin/verify-dsv4-env \
+    && /usr/local/bin/verify-dsv4-env \
+    && rm -rf /workspace/ktransformers/kt-kernel/build
+
+LABEL org.opencontainers.image.title="KTransformers DeepSeek-V4-Flash" \
+      org.opencontainers.image.source="https://github.com/kvcache-ai/ktransformers" \
+      org.opencontainers.image.version="${IMAGE_VERSION}" \
+      org.opencontainers.image.revision="${VCS_REF}" \
+      org.opencontainers.image.created="${BUILD_DATE}" \
+      io.ktransformers.cuda="12.8.1" \
+      io.ktransformers.sm="80,86,89,90,100,120" \
+      io.ktransformers.flashinfer="${FLASHINFER_VERSION}" \
+      io.ktransformers.sglang-revision="${SGLANG_REF}" \
+      io.ktransformers.layerwise-prefill-default="enabled-threshold-2048-swa-0.4"
+
+COPY docker/entrypoint-dsv4.sh /usr/local/bin/entrypoint-dsv4
+RUN chmod 0755 /usr/local/bin/entrypoint-dsv4
+
+WORKDIR /workspace
+EXPOSE 30000
+HEALTHCHECK --interval=30s --timeout=10s --start-period=15m --retries=20 \
+  CMD curl --fail --silent --show-error "http://127.0.0.1:$PORT/health" >/dev/null || exit 1
+STOPSIGNAL SIGTERM
+ENTRYPOINT ["/usr/local/bin/entrypoint-dsv4"]
+CMD []
 
 ########################################################
 ########## Dual Conda Environment Setup ################
