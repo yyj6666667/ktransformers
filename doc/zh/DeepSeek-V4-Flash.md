@@ -5,6 +5,9 @@
 你不需要安装 Python、编译 KTransformers，也不需要为不同显卡选择不同镜像。
 Docker 镜像会自动识别显卡并选择合适的内核。
 
+本教程使用已发布的镜像 `approachingai/ktransformers:DSV4-specific`。
+如需可复现部署，请优先使用发布说明中提供的不可变版本标签。
+
 ## 开始之前
 
 你需要准备：
@@ -48,7 +51,7 @@ docker run --name ktransformers-dsv4 \
   --device nvidia.com/gpu=0 --ipc host -p 30000:30000 \
   --cap-add SYS_NICE \
   -v "$PWD":/model:ro \
-  ghcr.io/kvcache-ai/ktransformers:dsv4-flash
+  approachingai/ktransformers:DSV4-specific
 ```
 
 Docker 会自动下载镜像、加载模型并编译当前显卡需要的 CUDA 内核。第一次启动可能
@@ -61,6 +64,58 @@ Docker 会自动下载镜像、加载模型并编译当前显卡需要的 CUDA �
 CPU/GPU 混合推理，并对输入长度不低于 2,048 tokens 的请求启用懒分配的
 layerwise prefill。
 
+## 使用 tensor parallel 多卡运行
+
+上面的单卡命令使用 `TP=1`。如需使用两张卡，显式指定容器内可见的 CUDA
+序号，并设置 tensor parallel 度：
+
+```bash
+docker run --name ktransformers-dsv4-tp2 \
+  --device nvidia.com/gpu=all --ipc host -p 30000:30000 \
+  --cap-add SYS_NICE \
+  -e CUDA_VISIBLE_DEVICES=0,1 -e TP=2 \
+  -v "$PWD":/model:ro \
+  approachingai/ktransformers:DSV4-specific
+```
+
+`CUDA_VISIBLE_DEVICES` 决定容器内可见的显卡；`TP` 会传给 SGLang 的
+`--tensor-parallel-size`。通常按“一张卡一个 rank”使用时，应让可见卡数量与
+`TP` 相等。镜像会在启动前检查 PyTorch 至少能看到 `TP` 张卡，因此配置不匹配
+会直接报错，而不会悄悄退回单卡。
+
+使用 Docker Compose 时，等价的便捷变量为：
+
+```bash
+GPU_DEVICE=0,1 TP=2 \
+  IMAGE_REPOSITORY=approachingai/ktransformers IMAGE_TAG=DSV4-specific \
+  docker compose -f docker/compose.dsv4.yml up -d --no-build
+```
+
+`GPU_DEVICE` 是 Compose 的输入变量，容器内会映射为 `CUDA_VISIBLE_DEVICES`。
+启动后可检查日志确认 TP 语义：
+
+```bash
+docker logs ktransformers-dsv4-tp2 2>&1 | \
+  grep -E 'visible_gpus=|tensor-parallel-size'
+```
+
+日志应显示选中的 GPU 数、`TP=2` 和 `--tensor-parallel-size 2`。
+
+## 默认启用的 layerwise prefill
+
+layerwise prefill 默认已经开启，不需要额外增加 feature flag。默认配置为：
+
+- `KT_GPU_PREFILL_TOKEN_THRESHOLD=2048`：输入达到该 token 阈值的请求使用
+  layerwise prefill。
+- `CHUNKED_PREFILL_SIZE=4096` 与 `MAX_PREFILL_TOKENS=4096`：每轮 prefill
+  调度最多处理 4,096 tokens。
+- `SWA_FULL_TOKENS_RATIO=0.4`：为默认 chunk 大小预留足够的 SWA KV-cache 页面。
+
+layerwise slot 会在第一个满足阈值的请求到来时才分配，因此该请求可能有一次性
+初始化开销。`KT_GPU_EXPERTS=0` **不会**关闭 layerwise prefill；它只表示 routed
+experts 不常驻 GPU。只有在希望降低峰值显存、刻意关闭该路径时，才设置
+`KT_GPU_PREFILL_TOKEN_THRESHOLD=0`。
+
 ## 检查是否启动成功
 
 保持第一个终端运行，打开第二个终端执行：
@@ -72,7 +127,7 @@ docker ps --filter name=ktransformers-dsv4
 当状态显示 `healthy` 后，再执行：
 
 ```bash
-curl --fail --silent http://127.0.0.1:30000/health >/dev/null \
+curl --fail --silent http://127.0.0.1:30000/health_generate >/dev/null \
   && echo "DeepSeek-V4-Flash 已就绪"
 ```
 
@@ -221,6 +276,7 @@ x86-64 CPU 上会自动选择它。该路径吞吐会低于 AVX512/AMX，但不�
 | 环境变量 | 默认值 | 作用 |
 | --- | ---: | --- |
 | `GPU_DEVICE`（Compose） | `0` | 一个 CUDA GPU 序号，或如 `0,1` 的逗号分隔列表 |
+| `CUDA_VISIBLE_DEVICES`（`docker run`） | 所有已暴露 GPU | 选择容器内可见的 CUDA 序号；与 `TP` 配合使用 |
 | `TP` | `1` | tensor parallel 度；不得超过选中的可见 GPU 数量 |
 | `PORT` | `30000` | HTTP 服务端口 |
 | `CONTEXT_LENGTH` | `16384` | 最大上下文长度 |
@@ -228,9 +284,10 @@ x86-64 CPU 上会自动选择它。该路径吞吐会低于 AVX512/AMX，但不�
 | `KT_GPU_EXPERTS` | `0` | 常驻 GPU 的 experts 数量；`0` 表示全部由 CPU experts 处理 |
 | `KT_CPUINFER_THREADS` | 自动 | CPU inference 线程数 |
 | `KT_THREADPOOL_COUNT` | 自动 | NUMA 线程池数量 |
-| `KT_GPU_PREFILL_TOKEN_THRESHOLD` | `2048` | 输入达到该 token 数时启用 layerwise prefill；设为 `0` 可关闭 |
+| `KT_GPU_PREFILL_TOKEN_THRESHOLD` | `2048` | 默认启用 layerwise prefill；输入达到该 token 数时使用，设为 `0` 可关闭 |
 | `CHUNKED_PREFILL_SIZE` | `4096` | 每轮 prefill 的最大 token 数；必须是 256 的倍数 |
 | `MAX_PREFILL_TOKENS` | `4096` | 调度器允许的最大 prefill token 数 |
+| `MAX_RUNNING_REQUESTS` | `2` | 默认 layerwise 安全配置下的最大并发运行请求数 |
 | `MAX_TOTAL_TOKENS` | 自动 | 聚合 KV token 预算。留空时，SGLang 会在扣除 layerwise slot 容量后自动计算。 |
 | `SWA_FULL_TOKENS_RATIO` | `0.4` | SWA KV token 与 full-attention KV token 的比例，适配默认 4096-token prefill chunk。 |
 | `ENABLE_MTP` | `0` | `1` 表示实验性启用 MTP |
@@ -243,14 +300,15 @@ docker run --name ktransformers-dsv4 \
   --cap-add SYS_NICE \
   -v "$PWD":/model:ro \
   -e CONTEXT_LENGTH=8192 \
-  ghcr.io/kvcache-ai/ktransformers:dsv4-flash
+  approachingai/ktransformers:DSV4-specific
 ```
 
 使用 Compose 开启 tensor parallel 时，GPU 列表和 TP 必须匹配：
 
 ```bash
 GPU_DEVICE=0,1 TP=2 \
-  docker compose -f docker/compose.dsv4.yml up -d --build
+  IMAGE_REPOSITORY=approachingai/ktransformers IMAGE_TAG=DSV4-specific \
+  docker compose -f docker/compose.dsv4.yml up -d --no-build
 ```
 
 启动前容器会检查 PyTorch 至少能看到 `TP` 张 GPU。
@@ -261,7 +319,7 @@ docker run --device nvidia.com/gpu=all \
   -e CUDA_VISIBLE_DEVICES=0,1 -e TP=2 \
   --ipc host -p 30000:30000 --cap-add SYS_NICE \
   -v "$PWD":/model:ro \
-  ghcr.io/kvcache-ai/ktransformers:dsv4-flash
+  approachingai/ktransformers:DSV4-specific
 ```
 
 镜像默认使用 `KT_GPU_PREFILL_TOKEN_THRESHOLD=2048`，并将
