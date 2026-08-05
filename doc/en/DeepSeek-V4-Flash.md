@@ -6,10 +6,6 @@ You do not need to install Python, compile KTransformers, or select a different
 image for each GPU generation. The image detects the GPU and selects the
 appropriate kernels automatically.
 
-This guide uses the published image
-`approachingai/ktransformers:DSV4-specific`. For a reproducible deployment,
-prefer an immutable release tag from the release notes when one is available.
-
 ## Before you start
 
 You need:
@@ -56,7 +52,7 @@ docker run --name ktransformers-dsv4 \
   --device nvidia.com/gpu=0 --ipc host -p 30000:30000 \
   --cap-add SYS_NICE \
   -v "$PWD":/model:ro \
-  approachingai/ktransformers:DSV4-specific
+  ghcr.io/kvcache-ai/ktransformers:dsv4-flash
 ```
 
 Docker downloads the image, loads the model, and compiles the CUDA kernels for
@@ -70,63 +66,6 @@ The model is mounted read-only, so the container cannot modify the host model
 files. The image uses stable CPU/GPU hybrid inference and enables lazy
 layerwise prefill by default for requests of at least 2,048 tokens.
 
-## Use multiple GPUs with tensor parallelism
-
-The one-GPU command above runs with `TP=1`. To use two GPUs, expose the desired
-CUDA ordinals and set the tensor-parallel degree explicitly:
-
-```bash
-docker run --name ktransformers-dsv4-tp2 \
-  --device nvidia.com/gpu=all --ipc host -p 30000:30000 \
-  --cap-add SYS_NICE \
-  -e CUDA_VISIBLE_DEVICES=0,1 -e TP=2 \
-  -v "$PWD":/model:ro \
-  approachingai/ktransformers:DSV4-specific
-```
-
-`CUDA_VISIBLE_DEVICES` selects the GPUs visible inside the container; `TP`
-becomes SGLang's `--tensor-parallel-size`. For the usual one-rank-per-GPU
-configuration, make the number of selected GPUs and `TP` equal. The image
-checks that PyTorch can see at least `TP` GPUs before it starts, so a mismatched
-configuration fails early instead of silently falling back to one GPU.
-
-With Docker Compose, use the equivalent convenience variables:
-
-```bash
-GPU_DEVICE=0,1 TP=2 \
-  IMAGE_REPOSITORY=approachingai/ktransformers IMAGE_TAG=DSV4-specific \
-  docker compose -f docker/compose.dsv4.yml up -d --no-build
-```
-
-`GPU_DEVICE` is a Compose input that becomes `CUDA_VISIBLE_DEVICES` in the
-container. To confirm TP after startup, inspect the launch log:
-
-```bash
-docker logs ktransformers-dsv4-tp2 2>&1 | \
-  grep -E 'visible_gpus=|tensor-parallel-size'
-```
-
-It should report the selected GPU count, `TP=2`, and
-`--tensor-parallel-size 2`.
-
-## Default layerwise prefill
-
-Layerwise prefill is enabled by default; it is not an extra feature flag you
-need to add. The default profile is:
-
-- `KT_GPU_PREFILL_TOKEN_THRESHOLD=2048`: requests at or above this input-token
-  threshold use layerwise prefill.
-- `CHUNKED_PREFILL_SIZE=4096` and `MAX_PREFILL_TOKENS=4096`: each prefill
-  scheduling round is capped at 4,096 tokens.
-- `SWA_FULL_TOKENS_RATIO=0.4`: reserves enough SWA KV-cache pages for that
-  default chunk size.
-
-The layerwise slots are allocated lazily on the first qualifying request, so
-that request can have a one-time setup cost. `KT_GPU_EXPERTS=0` does **not**
-disable layerwise prefill: it only keeps routed experts off the GPU between
-requests. Set `KT_GPU_PREFILL_TOKEN_THRESHOLD=0` only when you intentionally
-want to disable layerwise prefill, for example to reduce peak VRAM use.
-
 ## Check that the server is ready
 
 Keep the first terminal open and run this in a second terminal:
@@ -138,7 +77,7 @@ docker ps --filter name=ktransformers-dsv4
 When the status shows `healthy`, run:
 
 ```bash
-curl --fail --silent http://127.0.0.1:30000/health_generate >/dev/null \
+curl --fail --silent http://127.0.0.1:30000/health >/dev/null \
   && echo "DeepSeek-V4-Flash is ready"
 ```
 
@@ -299,7 +238,6 @@ Most users do not need to change these values:
 | Environment variable | Default | Purpose |
 | --- | ---: | --- |
 | `GPU_DEVICE` (Compose) | `0` | One CUDA GPU ordinal or a comma-separated list such as `0,1` |
-| `CUDA_VISIBLE_DEVICES` (`docker run`) | all exposed GPUs | Selects CUDA ordinals visible to the container; use it with `TP` |
 | `TP` | `1` | Tensor-parallel degree; it must not exceed the selected visible GPUs |
 | `PORT` | `30000` | HTTP server port |
 | `CONTEXT_LENGTH` | `16384` | Maximum context length |
@@ -307,10 +245,9 @@ Most users do not need to change these values:
 | `KT_GPU_EXPERTS` | `0` | Number of GPU-resident experts; `0` keeps all routed experts on the CPU |
 | `KT_CPUINFER_THREADS` | Auto | CPU inference threads |
 | `KT_THREADPOOL_COUNT` | Auto | NUMA worker pools |
-| `KT_GPU_PREFILL_TOKEN_THRESHOLD` | `2048` | Enables layerwise prefill for requests at or above this token count; set `0` to disable it |
+| `KT_GPU_PREFILL_TOKEN_THRESHOLD` | `2048` | Requests at or above this token count use layerwise prefill; set `0` to disable it |
 | `CHUNKED_PREFILL_SIZE` | `4096` | Maximum number of tokens in one prefill scheduling round; must be a multiple of 256 |
 | `MAX_PREFILL_TOKENS` | `4096` | Maximum number of prefill tokens admitted by the scheduler |
-| `MAX_RUNNING_REQUESTS` | `2` | Maximum concurrent running requests in the default layerwise-safe profile |
 | `MAX_TOTAL_TOKENS` | automatic | Aggregate KV-token budget. Leave unset to use the profiled budget after layerwise-slot capacity is held out. |
 | `SWA_FULL_TOKENS_RATIO` | `0.4` | Ratio of SWA KV tokens to full-attention KV tokens; sized for the default 4096-token prefill chunk |
 | `ENABLE_MTP` | `0` | `1` experimentally enables MTP |
@@ -323,15 +260,14 @@ docker run --name ktransformers-dsv4 \
   --cap-add SYS_NICE \
   -v "$PWD":/model:ro \
   -e CONTEXT_LENGTH=8192 \
-  approachingai/ktransformers:DSV4-specific
+  ghcr.io/kvcache-ai/ktransformers:dsv4-flash
 ```
 
 For tensor parallelism with Compose, set a matching GPU list and degree:
 
 ```bash
 GPU_DEVICE=0,1 TP=2 \
-  IMAGE_REPOSITORY=approachingai/ktransformers IMAGE_TAG=DSV4-specific \
-  docker compose -f docker/compose.dsv4.yml up -d --no-build
+  docker compose -f docker/compose.dsv4.yml up -d --build
 ```
 
 The container checks that PyTorch can see at least `TP` GPUs before launching.
@@ -342,7 +278,7 @@ docker run --device nvidia.com/gpu=all \
   -e CUDA_VISIBLE_DEVICES=0,1 -e TP=2 \
   --ipc host -p 30000:30000 --cap-add SYS_NICE \
   -v "$PWD":/model:ro \
-  approachingai/ktransformers:DSV4-specific
+  ghcr.io/kvcache-ai/ktransformers:dsv4-flash
 ```
 
 Layerwise prefill is enabled by default with
