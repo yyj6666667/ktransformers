@@ -30,50 +30,101 @@ SWA_FULL_TOKENS_RATIO="${SWA_FULL_TOKENS_RATIO:-}"
 WATCHDOG_TIMEOUT="${WATCHDOG_TIMEOUT:-1200}"
 ENABLE_MTP="${ENABLE_MTP:-0}"
 
+[[ "$TP" =~ ^[1-9][0-9]*$ ]] ||
+  die "TP must be a positive integer"
+
 [[ -r "$MODEL_PATH/config.json" ]] ||
   die "missing model config: $MODEL_PATH/config.json (mount the model directory at /model)"
 find "$MODEL_PATH" -maxdepth 1 -type f \
   \( -name '*.safetensors' -o -name '*.gguf' \) -print -quit | grep -q . ||
   die "no model weight files found below $MODEL_PATH"
 
-command -v nvidia-smi >/dev/null 2>&1 ||
-  die "nvidia-smi is unavailable; start the container with an NVIDIA CDI device"
-nvidia-smi -L >/dev/null 2>&1 ||
-  die "no NVIDIA GPU is visible inside the container"
+# nvidia-smi is useful for diagnostics but is not the CUDA capability contract:
+# stripped NVIDIA runtimes can expose CUDA correctly without shipping this tool.
+if ! command -v nvidia-smi >/dev/null 2>&1; then
+  log "nvidia-smi is unavailable; relying on PyTorch CUDA validation"
+elif ! nvidia-smi -L >/dev/null 2>&1; then
+  log "nvidia-smi did not report a GPU; relying on PyTorch CUDA validation"
+fi
 
-read -r SM_CODE GPU_NAME < <(
-  python - <<'PY'
+GPU_INFO="$(
+  TP="$TP" python - <<'PY'
+import os
 import torch
 
 if not torch.cuda.is_available():
     raise SystemExit("PyTorch cannot access CUDA")
-major, minor = torch.cuda.get_device_capability(0)
-print(f"{major}{minor}", torch.cuda.get_device_name(0).replace(" ", "_"))
-PY
-)
 
-case "$SM_CODE" in
-  80)  DEFAULT_TORCH_ARCH="8.0";      DEFAULT_FLASHINFER_ARCH="8.0" ;;
-  86)  DEFAULT_TORCH_ARCH="8.6";      DEFAULT_FLASHINFER_ARCH="8.6" ;;
-  89)  DEFAULT_TORCH_ARCH="8.9";      DEFAULT_FLASHINFER_ARCH="8.9" ;;
-  90)  DEFAULT_TORCH_ARCH="9.0+PTX";  DEFAULT_FLASHINFER_ARCH="9.0a" ;;
-  100) DEFAULT_TORCH_ARCH="10.0+PTX"; DEFAULT_FLASHINFER_ARCH="10.0a" ;;
-  120) DEFAULT_TORCH_ARCH="12.0+PTX"; DEFAULT_FLASHINFER_ARCH="12.0a" ;;
-  *) die "unsupported GPU compute capability SM_${SM_CODE}; supported: 80 86 89 90 100 120" ;;
-esac
+tp = int(os.environ["TP"])
+visible = torch.cuda.device_count()
+if visible < tp:
+    raise SystemExit(
+        f"TP={tp} requires at least {tp} visible GPU(s), but PyTorch sees {visible}. "
+        "Set GPU_DEVICE to a comma-separated CUDA device list, for example GPU_DEVICE=0,1."
+    )
+
+supported = {
+    (8, 0): ("8.0", "8.0"),
+    (8, 6): ("8.6", "8.6"),
+    (8, 9): ("8.9", "8.9"),
+    (9, 0): ("9.0+PTX", "9.0a"),
+    (10, 0): ("10.0+PTX", "10.0a"),
+    (12, 0): ("12.0+PTX", "12.0a"),
+}
+
+torch_archs = []
+flashinfer_archs = []
+gpu_summary = []
+for device_index in range(tp):
+    major, minor = torch.cuda.get_device_capability(device_index)
+    arches = supported.get((major, minor))
+    if arches is None:
+        raise SystemExit(
+            f"unsupported GPU compute capability SM_{major}{minor} on visible GPU {device_index}; "
+            "supported: 80 86 89 90 100 120"
+        )
+    torch_arch, flashinfer_arch = arches
+    if torch_arch not in torch_archs:
+        torch_archs.append(torch_arch)
+    if flashinfer_arch not in flashinfer_archs:
+        flashinfer_archs.append(flashinfer_arch)
+    name = torch.cuda.get_device_name(device_index).replace(" ", "_").replace("|", "_")
+    gpu_summary.append(f"{device_index}:{name}:SM_{major}{minor}")
+
+print(
+    "|".join(
+        (
+            str(visible),
+            ";".join(torch_archs),
+            ";".join(flashinfer_archs),
+            ",".join(gpu_summary),
+        )
+    )
+)
+PY
+)" || die "PyTorch cannot access CUDA; expose an NVIDIA GPU to the container"
+IFS='|' read -r VISIBLE_GPU_COUNT DEFAULT_TORCH_ARCH DEFAULT_FLASHINFER_ARCH GPU_SUMMARY <<< "$GPU_INFO"
+[[ "$VISIBLE_GPU_COUNT" =~ ^[0-9]+$ ]] ||
+  die "could not determine the number of visible GPUs"
 
 export TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST:-$DEFAULT_TORCH_ARCH}"
 export FLASHINFER_CUDA_ARCH_LIST="${FLASHINFER_CUDA_ARCH_LIST:-$DEFAULT_FLASHINFER_ARCH}"
 export SGLANG_DSV4_MODE="${SGLANG_DSV4_MODE:-2604}"
 export SGLANG_DSV4_2604_SUBMODE="${SGLANG_DSV4_2604_SUBMODE:-2604B}"
 
-grep -qm1 -w avx512f /proc/cpuinfo ||
-  die "DeepSeek-V4 CPU offload requires an x86 CPU with AVX512F"
+# The image is built with all kt-kernel variants.  DSV4 MXFP4 has an AVX2
+# backend, so AVX512/AMX are performance upgrades rather than requirements.
+grep -qm1 -w avx2 /proc/cpuinfo && grep -qm1 -w fma /proc/cpuinfo ||
+  die "DeepSeek-V4 CPU offload requires an x86-64 CPU with AVX2 and FMA"
+if ! grep -qm1 -w avx512f /proc/cpuinfo; then
+  log "AVX512F is unavailable; using the included AVX2 MXFP4 backend (lower throughput)"
+fi
 
-MEM_TOTAL_KIB="$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)"
-MIN_MEMORY_KIB=$((256 * 1024 * 1024))
-(( MEM_TOTAL_KIB >= MIN_MEMORY_KIB )) ||
-  die "at least 256 GiB system memory is required"
+MEM_TOTAL_KIB="$(awk '/^MemTotal:/ {print $2; exit}' /proc/meminfo)"
+RECOMMENDED_MEMORY_KIB=$((256 * 1024 * 1024))
+if [[ "$MEM_TOTAL_KIB" =~ ^[0-9]+$ ]] && (( MEM_TOTAL_KIB < RECOMMENDED_MEMORY_KIB )); then
+  log "WARNING: detected $((MEM_TOTAL_KIB / 1024 / 1024)) GiB RAM; 256 GiB is recommended. Continuing, but reduce context/concurrency if the host runs out of memory."
+fi
 
 PHYSICAL_CORES="$(
   lscpu -p=CORE,SOCKET |
@@ -99,7 +150,7 @@ if [[ -z "${KT_CPUINFER_THREADS:-}" ]]; then
 fi
 KT_THREADPOOL_COUNT="${KT_THREADPOOL_COUNT:-$NUMA_NODES}"
 
-for value_name in PORT TP CONTEXT_LENGTH KT_GPU_EXPERTS KT_CPUINFER_THREADS \
+for value_name in PORT CONTEXT_LENGTH KT_GPU_EXPERTS KT_CPUINFER_THREADS \
   KT_THREADPOOL_COUNT KT_GPU_PREFILL_TOKEN_THRESHOLD CHUNKED_PREFILL_SIZE \
   MAX_PREFILL_TOKENS WATCHDOG_TIMEOUT; do
   value="${!value_name}"
@@ -192,7 +243,7 @@ else
   log "NUMA interleave is unavailable; continuing without numactl"
 fi
 
-log "GPU=${GPU_NAME//_/ } SM_${SM_CODE}, torch_arch=${TORCH_CUDA_ARCH_LIST}, flashinfer_arch=${FLASHINFER_CUDA_ARCH_LIST}"
+log "GPUs=${GPU_SUMMARY}, visible_gpus=${VISIBLE_GPU_COUNT}, TP=${TP}, CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-all}, torch_arch=${TORCH_CUDA_ARCH_LIST}, flashinfer_arch=${FLASHINFER_CUDA_ARCH_LIST}"
 log "CPU cores=${PHYSICAL_CORES}, cpuinfer=${KT_CPUINFER_THREADS}, NUMA pools=${KT_THREADPOOL_COUNT}"
 printf '[dsv4-entrypoint] launching:' >&2
 printf ' %q' "${numa_prefix[@]}" "${cmd[@]}" >&2

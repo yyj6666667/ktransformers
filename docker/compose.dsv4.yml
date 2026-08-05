@@ -2,7 +2,7 @@ name: ktransformers-dsv4
 
 services:
   server:
-    image: ktransformers:dsv4-flash-cu128
+    image: ${IMAGE_REPOSITORY:-ktransformers}:${IMAGE_TAG:-dsv4-flash-cu128}
     build:
       context: ..
       dockerfile: docker/Dockerfile
@@ -10,8 +10,14 @@ services:
       args:
         DSV4_BASE_IMAGE: ${DSV4_BASE_IMAGE:-docker.m.daocloud.io/nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04}
         PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}
+        IMAGE_VERSION: ${IMAGE_VERSION:-dsv4-flash-cu128}
+        VCS_REF: ${VCS_REF:-unknown}
+        SGLANG_REF: ${SGLANG_REF:-unknown}
+        BUILD_DATE: ${BUILD_DATE:-unknown}
+        SOURCE_REPOSITORY: ${SOURCE_REPOSITORY:-https://github.com/yyj6666667/ktransformers}
+        SGLANG_SOURCE: ${SGLANG_SOURCE:-https://github.com/yyj6666667/sglang}
     devices:
-      - "nvidia.com/gpu=${GPU_DEVICE:-0}"
+      - "nvidia.com/gpu=all"
     ipc: host
     cap_add:
       - SYS_NICE
@@ -19,7 +25,10 @@ services:
       MODEL_PATH: /model
       HOST: 0.0.0.0
       PORT: ${PORT:-30000}
-      TP: ${TP:-1}
+      # GPU_DEVICE is retained for compatibility and now accepts a
+      # comma-separated CUDA-visible device list, e.g. GPU_DEVICE=0,1.
+      CUDA_VISIBLE_DEVICES: "${GPU_DEVICE:-0}"
+      TP: "${TP:-1}"
       CONTEXT_LENGTH: ${CONTEXT_LENGTH:-16384}
       MEM_FRACTION: ${MEM_FRACTION:-0.90}
       KT_GPU_EXPERTS: ${KT_GPU_EXPERTS:-0}
@@ -31,6 +40,9 @@ services:
       KT_CPUINFER_THREADS: ${KT_CPUINFER_THREADS:-}
       KT_THREADPOOL_COUNT: ${KT_THREADPOOL_COUNT:-}
       ENABLE_MTP: ${ENABLE_MTP:-0}
+      KT_KERNEL_CPU_VARIANT: "${KT_KERNEL_CPU_VARIANT:-}"
+      KT_MXFP4_BACKEND: "${KT_MXFP4_BACKEND:-}"
+      KT_KERNEL_DEBUG: "${KT_KERNEL_DEBUG:-0}"
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
     volumes:
       - type: bind
