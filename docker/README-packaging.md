@@ -23,6 +23,8 @@ docker buildx build \
   --build-arg IMAGE_VERSION=dsv4-flash-cu128 \
   --build-arg VCS_REF="$(git rev-parse HEAD)" \
   --build-arg SGLANG_REF="$(git -C third_party/sglang rev-parse HEAD)" \
+  --build-arg SOURCE_REPOSITORY="$(git config --get remote.origin.url)" \
+  --build-arg SGLANG_SOURCE="$(git config -f .gitmodules --get submodule.third_party/sglang.url)" \
   --build-arg BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
   --tag ktransformers:dsv4-flash-cu128-candidate \
   --load \
@@ -50,6 +52,11 @@ docker compose -f docker/compose.dsv4.yml up -d --build --wait
 docker compose -f docker/compose.dsv4.yml logs -f server
 docker compose -f docker/compose.dsv4.yml down
 ```
+
+`GPU_DEVICE` accepts one CUDA ordinal or a comma-separated list.  For example,
+`GPU_DEVICE=0,1 TP=2` exposes two GPUs and launches SGLang with tensor
+parallelism two.  The entrypoint rejects `TP` values greater than the number
+of GPUs visible to PyTorch.
 
 For repeatable local configuration, copy `dsv4.env.example` to the ignored
 `dsv4.env` file and pass it with `--env-file docker/dsv4.env`.

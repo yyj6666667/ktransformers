@@ -195,6 +195,8 @@ ARG IMAGE_VERSION=dev
 ARG VCS_REF=unknown
 ARG SGLANG_REF=unknown
 ARG BUILD_DATE=unknown
+ARG SOURCE_REPOSITORY=https://github.com/yyj6666667/ktransformers
+ARG SGLANG_SOURCE=https://github.com/yyj6666667/sglang
 ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
 ARG TORCH_VERSION=2.9.1
 ARG SGL_KERNEL_VERSION=0.3.21
@@ -291,13 +293,14 @@ RUN chmod 0755 /usr/local/bin/verify-dsv4-env \
     && rm -rf /workspace/ktransformers/kt-kernel/build
 
 LABEL org.opencontainers.image.title="KTransformers DeepSeek-V4-Flash" \
-      org.opencontainers.image.source="https://github.com/kvcache-ai/ktransformers" \
+      org.opencontainers.image.source="${SOURCE_REPOSITORY}" \
       org.opencontainers.image.version="${IMAGE_VERSION}" \
       org.opencontainers.image.revision="${VCS_REF}" \
       org.opencontainers.image.created="${BUILD_DATE}" \
       io.ktransformers.cuda="12.8.1" \
       io.ktransformers.sm="80,86,89,90,100,120" \
       io.ktransformers.flashinfer="${FLASHINFER_VERSION}" \
+      io.ktransformers.sglang-source="${SGLANG_SOURCE}" \
       io.ktransformers.sglang-revision="${SGLANG_REF}" \
       io.ktransformers.layerwise-prefill-default="enabled-threshold-2048-swa-0.4"
 

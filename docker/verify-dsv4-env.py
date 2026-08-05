@@ -6,6 +6,7 @@ from __future__ import annotations
 import importlib.metadata
 import subprocess
 import sys
+from pathlib import Path
 
 
 EXPECTED = {
@@ -82,11 +83,22 @@ def verify_imports() -> None:
     import transformers
     from sglang.srt.configs.deepseek_v4 import DeepSeekV4Config  # noqa: F401
 
+    # DSV4's default MXFP4 path must remain portable to AVX2-only hosts.  The
+    # entrypoint selects this variant at runtime when AVX512/AMX is absent.
+    package_dir = Path(kt_kernel.__file__).resolve().parent
+    avx2_variants = list(package_dir.glob("_kt_kernel_ext_avx2.*.so"))
+    if not avx2_variants:
+        raise RuntimeError(
+            "DSV4 image is missing the AVX2 kt-kernel variant; "
+            "build with CPUINFER_BUILD_ALL_VARIANTS=1"
+        )
+
     print(
         "DSV4 environment OK:",
         f"torch={torch.__version__}",
         f"cuda={torch.version.cuda}",
         f"transformers={transformers.__version__}",
+        f"avx2_variant={avx2_variants[0].name}",
     )
 
 

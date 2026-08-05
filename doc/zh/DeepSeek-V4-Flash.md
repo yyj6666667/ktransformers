@@ -11,8 +11,8 @@ Docker 镜像会自动识别显卡并选择合适的内核。
 
 - x86-64 Linux
 - 一张 NVIDIA GPU；已验证 RTX 5090，推荐至少 32 GB 显存
-- 支持 AVX512F 的 CPU
-- 至少 256 GiB 系统内存
+- 支持 AVX2 与 FMA 的 x86-64 CPU；如具备 AVX512/AMX 会自动使用更快内核，但并非必需
+- 建议 256 GiB 系统内存；较小内存机器可降低上下文和并发后尝试，但可能发生主机内存不足
 - 约 150 GB 模型空间，建议预留 200 GB
 - Docker 和 NVIDIA Container Toolkit
 
@@ -199,6 +199,16 @@ docker rm ktransformers-dsv4
 
 如果仍然不足，可以改为 `0`，或进一步降低 `CONTEXT_LENGTH`。
 
+### CPU 没有 AVX512
+
+AVX512 不是硬性要求。镜像内已包含 AVX2 MXFP4 后端，在支持 AVX2 与 FMA 的
+x86-64 CPU 上会自动选择它。该路径吞吐会低于 AVX512/AMX，但不需要换镜像或额外设置启动参数。
+
+### 主机内存少于 256 GiB
+
+256 GiB 是默认配置的建议容量，而不是启动门槛。较小内存机器仍可启动；如果主机内存不足，
+请降低 `CONTEXT_LENGTH`、`MAX_RUNNING_REQUESTS`，并在显存允许范围内调整 `KT_GPU_EXPERTS`。
+
 ### 日志中出现 warning
 
 第一次启动会加载依赖并编译 JIT 内核，部分可选模型组件可能输出 warning。判断服务
@@ -210,6 +220,8 @@ docker rm ktransformers-dsv4
 
 | 环境变量 | 默认值 | 作用 |
 | --- | ---: | --- |
+| `GPU_DEVICE`（Compose） | `0` | 一个 CUDA GPU 序号，或如 `0,1` 的逗号分隔列表 |
+| `TP` | `1` | tensor parallel 度；不得超过选中的可见 GPU 数量 |
 | `PORT` | `30000` | HTTP 服务端口 |
 | `CONTEXT_LENGTH` | `16384` | 最大上下文长度 |
 | `MEM_FRACTION` | `0.90` | 静态显存使用比例 |
@@ -231,6 +243,24 @@ docker run --name ktransformers-dsv4 \
   --cap-add SYS_NICE \
   -v "$PWD":/model:ro \
   -e CONTEXT_LENGTH=8192 \
+  ghcr.io/kvcache-ai/ktransformers:dsv4-flash
+```
+
+使用 Compose 开启 tensor parallel 时，GPU 列表和 TP 必须匹配：
+
+```bash
+GPU_DEVICE=0,1 TP=2 \
+  docker compose -f docker/compose.dsv4.yml up -d --build
+```
+
+启动前容器会检查 PyTorch 至少能看到 `TP` 张 GPU。
+直接使用 `docker run` 时，等价配置如下：
+
+```bash
+docker run --device nvidia.com/gpu=all \
+  -e CUDA_VISIBLE_DEVICES=0,1 -e TP=2 \
+  --ipc host -p 30000:30000 --cap-add SYS_NICE \
+  -v "$PWD":/model:ro \
   ghcr.io/kvcache-ai/ktransformers:dsv4-flash
 ```
 

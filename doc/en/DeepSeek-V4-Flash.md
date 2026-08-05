@@ -12,8 +12,10 @@ You need:
 
 - x86-64 Linux
 - One NVIDIA GPU; RTX 5090 is validated and at least 32 GB VRAM is recommended
-- A CPU with AVX512F
-- At least 256 GiB of system memory
+- An x86-64 CPU with AVX2 and FMA. AVX512/AMX is detected automatically and
+  improves throughput, but is not required.
+- 256 GiB of system memory is recommended. Smaller systems can be tried with
+  lower context length and concurrency, but may run out of host memory.
 - About 150 GB for the model; keep at least 200 GB free
 - Docker and NVIDIA Container Toolkit
 
@@ -209,6 +211,19 @@ Then add this before the image name in the start command:
 
 If necessary, use `0` or reduce `CONTEXT_LENGTH` as well.
 
+### The CPU does not have AVX512
+
+AVX512 is optional. The image contains an AVX2 MXFP4 backend and selects it
+automatically on an x86-64 CPU with AVX2 and FMA. It is slower than AVX512/AMX,
+but does not require a different image or an extra launch flag.
+
+### The host has less than 256 GiB of RAM
+
+256 GiB is a recommended capacity for the default configuration, not a startup
+gate. The container will start on smaller hosts, but lower `CONTEXT_LENGTH`,
+`MAX_RUNNING_REQUESTS`, and tune `KT_GPU_EXPERTS` within the available VRAM if
+the host runs out of memory.
+
 ### Warnings appear in the log
 
 The first start loads optional dependencies and compiles JIT kernels, so some
@@ -222,6 +237,8 @@ Most users do not need to change these values:
 
 | Environment variable | Default | Purpose |
 | --- | ---: | --- |
+| `GPU_DEVICE` (Compose) | `0` | One CUDA GPU ordinal or a comma-separated list such as `0,1` |
+| `TP` | `1` | Tensor-parallel degree; it must not exceed the selected visible GPUs |
 | `PORT` | `30000` | HTTP server port |
 | `CONTEXT_LENGTH` | `16384` | Maximum context length |
 | `MEM_FRACTION` | `0.90` | Static GPU-memory fraction |
@@ -243,6 +260,24 @@ docker run --name ktransformers-dsv4 \
   --cap-add SYS_NICE \
   -v "$PWD":/model:ro \
   -e CONTEXT_LENGTH=8192 \
+  ghcr.io/kvcache-ai/ktransformers:dsv4-flash
+```
+
+For tensor parallelism with Compose, set a matching GPU list and degree:
+
+```bash
+GPU_DEVICE=0,1 TP=2 \
+  docker compose -f docker/compose.dsv4.yml up -d --build
+```
+
+The container checks that PyTorch can see at least `TP` GPUs before launching.
+For direct `docker run`, use the equivalent CDI and CUDA settings:
+
+```bash
+docker run --device nvidia.com/gpu=all \
+  -e CUDA_VISIBLE_DEVICES=0,1 -e TP=2 \
+  --ipc host -p 30000:30000 --cap-add SYS_NICE \
+  -v "$PWD":/model:ro \
   ghcr.io/kvcache-ai/ktransformers:dsv4-flash
 ```
 
