@@ -4,6 +4,9 @@
 from __future__ import annotations
 
 import importlib.metadata
+import os
+import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -75,6 +78,11 @@ def verify_dependency_metadata() -> None:
 
 
 def verify_imports() -> None:
+    # Force the portable variant before anything can import kt_kernel.  Merely
+    # checking that the file exists missed an AVX-512-contaminated AVX2 build.
+    os.environ["KT_KERNEL_CPU_VARIANT"] = "avx2"
+    os.environ["KT_MXFP4_BACKEND"] = "avx2"
+
     import flashinfer  # noqa: F401
     import kt_kernel  # noqa: F401
     import sglang  # noqa: F401
@@ -93,12 +101,70 @@ def verify_imports() -> None:
             "build with CPUINFER_BUILD_ALL_VARIANTS=1"
         )
 
+    if kt_kernel.__cpu_variant__ != "avx2":
+        raise RuntimeError(
+            "DSV4 image validation forced the AVX2 kt-kernel variant, "
+            f"but loaded {kt_kernel.__cpu_variant__!r}"
+        )
+
+    verify_avx2_instruction_contract(avx2_variants[0])
+
+    # Exercise the exact native constructor that previously raised SIGILL on
+    # AVX2-only hosts.  Keep this after the binary scan so an invalid artifact
+    # fails with a useful instruction address on AVX-512 build machines too.
+    worker_config = kt_kernel.kt_kernel_ext.WorkerPoolConfig()
+    worker_config.subpool_count = 1
+    worker_config.subpool_numa_map = [0]
+    worker_config.subpool_thread_count = [1]
+    cpu_infer = kt_kernel.kt_kernel_ext.CPUInfer(worker_config)
+    cpu_infer.sync()
+    del cpu_infer
+
     print(
         "DSV4 environment OK:",
         f"torch={torch.__version__}",
         f"cuda={torch.version.cuda}",
         f"transformers={transformers.__version__}",
         f"avx2_variant={avx2_variants[0].name}",
+        "avx2_cpuinfer=ok",
+    )
+
+
+def verify_avx2_instruction_contract(shared_object: Path) -> None:
+    """Reject EVEX-encoded instructions from the AVX2 shared object."""
+    objdump = shutil.which("objdump")
+    if objdump is None:
+        raise RuntimeError("objdump is required to validate the AVX2 kt-kernel variant")
+
+    # In 64-bit mode an instruction beginning with byte 0x62 uses the EVEX
+    # prefix.  AVX2 uses VEX, so EVEX in executable code proves that the binary
+    # requires an AVX-512-family feature regardless of the printed mnemonic.
+    evex_instruction = re.compile(r"^\s*[0-9a-f]+:\s+62(?:\s|$)", re.IGNORECASE)
+    process = subprocess.Popen(
+        [objdump, "-d", str(shared_object)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    assert process.stdout is not None
+    offending_line = None
+    for line in process.stdout:
+        if evex_instruction.search(line):
+            offending_line = line.strip()
+            process.terminate()
+            break
+
+    if offending_line is None:
+        stderr = process.communicate()[1]
+        if process.returncode != 0:
+            raise RuntimeError(
+                f"objdump failed while validating {shared_object.name}: {stderr.strip()}"
+            )
+        return
+
+    process.communicate()
+    raise RuntimeError(
+        f"AVX2 kt-kernel variant contains an EVEX/AVX-512 instruction: {offending_line}"
     )
 
 

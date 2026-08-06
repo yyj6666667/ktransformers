@@ -311,6 +311,40 @@ elseif(CMAKE_OSX_ARCHITECTURES STREQUAL "x86_64" OR CMAKE_GENERATOR_PLATFORM_LWR
         endif()
         if(LLAMA_AVX2)
             list(APPEND ARCH_FLAGS -mavx2 -mfma -msse3 -mf16c)
+            if(NOT LLAMA_AVX512)
+                # AVX2 wheels are portable artifacts, even when compiled on an
+                # AVX-512 build host.  Explicit negative flags protect against
+                # AVX-512 leaking in through toolchain/global -march settings.
+                set(AVX512_DISABLE_FLAGS
+                    -mno-avx512f
+                    -mno-avx512cd
+                    -mno-avx512er
+                    -mno-avx512pf
+                    -mno-avx512vl
+                    -mno-avx512bw
+                    -mno-avx512dq
+                    -mno-avx512ifma
+                    -mno-avx512vbmi
+                    -mno-avx512vbmi2
+                    -mno-avx512vnni
+                    -mno-avx512bitalg
+                    -mno-avx512vpopcntdq
+                    -mno-avx5124fmaps
+                    -mno-avx5124vnniw
+                    -mno-avx512bf16
+                    -mno-avx512fp16)
+                foreach(AVX512_DISABLE_FLAG IN LISTS AVX512_DISABLE_FLAGS)
+                    string(MAKE_C_IDENTIFIER "${AVX512_DISABLE_FLAG}" AVX512_DISABLE_FLAG_ID)
+                    string(TOUPPER "${AVX512_DISABLE_FLAG_ID}" AVX512_DISABLE_FLAG_ID)
+                    set(AVX512_DISABLE_FLAG_SUPPORTED "COMPILER_SUPPORTS${AVX512_DISABLE_FLAG_ID}")
+                    check_cxx_compiler_flag(
+                        "${AVX512_DISABLE_FLAG}"
+                        "${AVX512_DISABLE_FLAG_SUPPORTED}")
+                    if(${AVX512_DISABLE_FLAG_SUPPORTED})
+                        list(APPEND ARCH_FLAGS "${AVX512_DISABLE_FLAG}")
+                    endif()
+                endforeach()
+            endif()
         endif()
         if(LLAMA_AVX512)
             list(APPEND ARCH_FLAGS -mavx512f -mavx512bw -mavx512dq -mavx512vl -mfma -mf16c -msse3)
