@@ -326,6 +326,9 @@ class CMakeBuild(build_ext):
                 {
                     "CPUINFER_CPU_INSTRUCT": "AVX2",
                     "CPUINFER_ENABLE_AVX512": "OFF",
+                    "CPUINFER_ENABLE_AVX512_VNNI": "OFF",
+                    "CPUINFER_ENABLE_AVX512_BF16": "OFF",
+                    "CPUINFER_ENABLE_AVX512_VBMI": "OFF",
                     "CPUINFER_ENABLE_AMX": "OFF",
                 },
             ),
@@ -585,8 +588,13 @@ class CMakeBuild(build_ext):
         #     cmake_args.append("-DKTRANSFORMERS_CPU_USE_KML=ON")
         #     print("-- Detected ARM CPU; enabling KML (-DKTRANSFORMERS_CPU_USE_KML=ON)")
 
+        # AVX2 is a portability contract, so inherited host-detection values
+        # must never turn AMX/AVX-512 back on for this build.
+        if cpu_mode == "AVX2":
+            cmake_args.append("-DKTRANSFORMERS_CPU_USE_AMX=OFF")
+            print("-- AVX2 target: forcing AMX backend OFF")
         # AMX: explicit env overrides; else enable if detected
-        if not _forward_bool_env(cmake_args, "CPUINFER_ENABLE_AMX", "KTRANSFORMERS_CPU_USE_AMX"):
+        elif not _forward_bool_env(cmake_args, "CPUINFER_ENABLE_AMX", "KTRANSFORMERS_CPU_USE_AMX"):
             if "AMX" in d["features"]:
                 cmake_args.append("-DKTRANSFORMERS_CPU_USE_AMX=ON")
                 print("-- AMX support detected; enabling (-DKTRANSFORMERS_CPU_USE_AMX=ON)")
@@ -596,7 +604,10 @@ class CMakeBuild(build_ext):
         # - Otherwise, only auto-enable when CPU mode actually wants AVX512
         #   (NATIVE/FANCY/AVX512). In AVX2 mode we do NOT enable this, so
         #   RAWINT4 / K2 kernels are not compiled.
-        if not _forward_bool_env(cmake_args, "CPUINFER_ENABLE_AVX512", "KTRANSFORMERS_CPU_USE_AMX_AVX512"):
+        if cpu_mode == "AVX2":
+            cmake_args.append("-DKTRANSFORMERS_CPU_USE_AMX_AVX512=OFF")
+            print("-- AVX2 target: forcing AMX/AVX512 backend OFF")
+        elif not _forward_bool_env(cmake_args, "CPUINFER_ENABLE_AVX512", "KTRANSFORMERS_CPU_USE_AMX_AVX512"):
             if cpu_mode in ("NATIVE", "FANCY", "AVX512") and ("AMX" in d["features"] or "AVX512" in d["features"]):
                 cmake_args.append("-DKTRANSFORMERS_CPU_USE_AMX_AVX512=ON")
                 print("-- Enabling AMX/AVX512 umbrella (-DKTRANSFORMERS_CPU_USE_AMX_AVX512=ON)")
@@ -609,28 +620,41 @@ class CMakeBuild(build_ext):
         avx512_extension_enabled = False
         allow_avx512_ext_auto = cpu_mode in ("NATIVE", "FANCY", "AVX512")
 
-        if not _forward_bool_env(cmake_args, "CPUINFER_ENABLE_AVX512_VNNI", "LLAMA_AVX512_VNNI"):
+        if cpu_mode == "AVX2":
+            cmake_args.extend(
+                [
+                    "-DLLAMA_AVX512_VNNI=OFF",
+                    "-DLLAMA_AVX512_BF16=OFF",
+                    "-DLLAMA_AVX512_VBMI=OFF",
+                ]
+            )
+            print("-- AVX2 target: forcing all AVX512 extensions OFF")
+        elif not _forward_bool_env(cmake_args, "CPUINFER_ENABLE_AVX512_VNNI", "LLAMA_AVX512_VNNI"):
             if allow_avx512_ext_auto and "AVX512_VNNI" in d["features"]:
                 cmake_args.append("-DLLAMA_AVX512_VNNI=ON")
                 print("-- AVX512_VNNI detected; enabling (-DLLAMA_AVX512_VNNI=ON)")
                 avx512_extension_enabled = True
-        else:
+        elif cpu_mode != "AVX2":
             avx512_extension_enabled = True
 
-        if not _forward_bool_env(cmake_args, "CPUINFER_ENABLE_AVX512_BF16", "LLAMA_AVX512_BF16"):
+        if cpu_mode != "AVX2" and not _forward_bool_env(
+            cmake_args, "CPUINFER_ENABLE_AVX512_BF16", "LLAMA_AVX512_BF16"
+        ):
             if allow_avx512_ext_auto and "AVX512_BF16" in d["features"]:
                 cmake_args.append("-DLLAMA_AVX512_BF16=ON")
                 print("-- AVX512_BF16 detected; enabling (-DLLAMA_AVX512_BF16=ON)")
                 avx512_extension_enabled = True
-        else:
+        elif cpu_mode != "AVX2":
             avx512_extension_enabled = True
 
-        if not _forward_bool_env(cmake_args, "CPUINFER_ENABLE_AVX512_VBMI", "LLAMA_AVX512_VBMI"):
+        if cpu_mode != "AVX2" and not _forward_bool_env(
+            cmake_args, "CPUINFER_ENABLE_AVX512_VBMI", "LLAMA_AVX512_VBMI"
+        ):
             if allow_avx512_ext_auto and "AVX512_VBMI" in d["features"]:
                 cmake_args.append("-DLLAMA_AVX512_VBMI=ON")
                 print("-- AVX512_VBMI detected; enabling (-DLLAMA_AVX512_VBMI=ON)")
                 avx512_extension_enabled = True
-        else:
+        elif cpu_mode != "AVX2":
             avx512_extension_enabled = True
 
         # If any AVX512 extension is enabled, ensure base AVX512 is also enabled
