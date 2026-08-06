@@ -140,8 +140,11 @@ def verify_avx2_instruction_contract(shared_object: Path) -> None:
     # prefix.  AVX2 uses VEX, so EVEX in executable code proves that the binary
     # requires an AVX-512-family feature regardless of the printed mnemonic.
     evex_instruction = re.compile(r"^\s*[0-9a-f]+:\s+62(?:\s|$)", re.IGNORECASE)
+    # Keep every instruction's raw bytes on one output line.  Without -w,
+    # objdump wraps long instructions and a continuation line whose first data
+    # byte is 0x62 can be mistaken for a new EVEX-prefixed instruction.
     process = subprocess.Popen(
-        [objdump, "-d", str(shared_object)],
+        [objdump, "-d", "-w", str(shared_object)],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
