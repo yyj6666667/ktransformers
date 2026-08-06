@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import importlib.metadata
 import os
 import re
@@ -77,7 +78,7 @@ def verify_dependency_metadata() -> None:
         )
 
 
-def verify_imports() -> None:
+def verify_imports(*, instantiate_cpuinfer: bool = True) -> None:
     # Force the portable variant before anything can import kt_kernel.  Merely
     # checking that the file exists missed an AVX-512-contaminated AVX2 build.
     os.environ["KT_KERNEL_CPU_VARIANT"] = "avx2"
@@ -112,13 +113,14 @@ def verify_imports() -> None:
     # Exercise the exact native constructor that previously raised SIGILL on
     # AVX2-only hosts.  Keep this after the binary scan so an invalid artifact
     # fails with a useful instruction address on AVX-512 build machines too.
-    worker_config = kt_kernel.kt_kernel_ext.WorkerPoolConfig()
-    worker_config.subpool_count = 1
-    worker_config.subpool_numa_map = [0]
-    worker_config.subpool_thread_count = [1]
-    cpu_infer = kt_kernel.kt_kernel_ext.CPUInfer(worker_config)
-    cpu_infer.sync()
-    del cpu_infer
+    if instantiate_cpuinfer:
+        worker_config = kt_kernel.kt_kernel_ext.WorkerPoolConfig()
+        worker_config.subpool_count = 1
+        worker_config.subpool_numa_map = [0]
+        worker_config.subpool_thread_count = [1]
+        cpu_infer = kt_kernel.kt_kernel_ext.CPUInfer(worker_config)
+        cpu_infer.sync()
+        del cpu_infer
 
     print(
         "DSV4 environment OK:",
@@ -126,7 +128,7 @@ def verify_imports() -> None:
         f"cuda={torch.version.cuda}",
         f"transformers={transformers.__version__}",
         f"avx2_variant={avx2_variants[0].name}",
-        "avx2_cpuinfer=ok",
+        f"avx2_cpuinfer={'ok' if instantiate_cpuinfer else 'deferred'}",
     )
 
 
@@ -172,6 +174,13 @@ def verify_avx2_instruction_contract(shared_object: Path) -> None:
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--skip-cpuinfer",
+        action="store_true",
+        help="defer CPUInfer construction when the build sandbox has no valid NUMA topology",
+    )
+    args = parser.parse_args()
     verify_versions()
     verify_dependency_metadata()
-    verify_imports()
+    verify_imports(instantiate_cpuinfer=not args.skip_cpuinfer)
