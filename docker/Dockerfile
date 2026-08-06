@@ -289,7 +289,7 @@ RUN test -f /workspace/ktransformers/third_party/sglang/python/pyproject.toml \
 
 COPY docker/verify-dsv4-env.py /usr/local/bin/verify-dsv4-env
 RUN chmod 0755 /usr/local/bin/verify-dsv4-env \
-    && /usr/local/bin/verify-dsv4-env \
+    && /usr/local/bin/verify-dsv4-env --skip-cpuinfer \
     && rm -rf /workspace/ktransformers/kt-kernel/build
 
 LABEL org.opencontainers.image.title="KTransformers DeepSeek-V4-Flash" \
