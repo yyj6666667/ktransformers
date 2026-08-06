@@ -115,7 +115,16 @@ os.chdir(REPO_ROOT)
 CPU_FEATURE_MAP = {
     "FANCY": "-DLLAMA_NATIVE=OFF -DLLAMA_FMA=ON -DLLAMA_F16C=ON -DLLAMA_AVX=ON -DLLAMA_AVX2=ON -DLLAMA_AVX512=ON -DLLAMA_AVX512_FANCY_SIMD=ON",
     "AVX512": "-DLLAMA_NATIVE=OFF -DLLAMA_FMA=ON -DLLAMA_F16C=ON -DLLAMA_AVX=ON -DLLAMA_AVX2=ON -DLLAMA_AVX512=ON",
-    "AVX2": "-DLLAMA_NATIVE=OFF -DLLAMA_FMA=ON -DLLAMA_F16C=ON -DLLAMA_AVX=ON -DLLAMA_AVX2=ON",
+    # Keep every AVX-512 cache entry explicit.  Leaving one undefined lets
+    # DetectCPU.cmake re-enable it from the build host and can silently put
+    # AVX-512 instructions in the artifact named _kt_kernel_ext_avx2.so.
+    "AVX2": (
+        "-DLLAMA_NATIVE=OFF -DLLAMA_FMA=ON -DLLAMA_F16C=ON "
+        "-DLLAMA_AVX=ON -DLLAMA_AVX2=ON "
+        "-DLLAMA_AVX512=OFF -DLLAMA_AVX512_FANCY_SIMD=OFF "
+        "-DLLAMA_AVX512_VBMI=OFF -DLLAMA_AVX512_VNNI=OFF "
+        "-DLLAMA_AVX512_BF16=OFF"
+    ),
     "NATIVE": "-DLLAMA_NATIVE=ON",
 }
 
