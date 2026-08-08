@@ -31,13 +31,6 @@ docker buildx build \
   .
 ```
 
-`flashinfer-cubin` is fetched from FlashInfer's official wheel index.  On a
-builder that cannot reach the index's GitHub Release redirect, pass the
-official wheel as a BuildKit secret instead; the Dockerfile verifies its
-pinned SHA256 before installation.  Add
-`--secret id=flashinfer_cubin,src=/path/to/flashinfer_cubin-0.6.15.post1-py3-none-any.whl`
-to the build command above.
-
 The image:
 
 - Reads a host model mounted read-only at `/model`.
