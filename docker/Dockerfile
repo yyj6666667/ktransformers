@@ -256,6 +256,7 @@ RUN python -m pip install \
 COPY docker/constraints-dsv4.txt /tmp/constraints-dsv4.txt
 
 ARG FLASHINFER_CUBIN_INDEX_URL=https://flashinfer.ai/whl
+ARG FLASHINFER_CUBIN_TRUSTED_HOST=flashinfer.ai
 
 RUN python -m pip install -c /tmp/constraints-dsv4.txt \
         "sgl-kernel==${SGL_KERNEL_VERSION}" \
@@ -267,6 +268,7 @@ RUN python -m pip install -c /tmp/constraints-dsv4.txt \
         "nvidia-cutlass-dsl==4.6.1" \
     && python -m pip install \
         --index-url "${FLASHINFER_CUBIN_INDEX_URL}" \
+        --trusted-host "${FLASHINFER_CUBIN_TRUSTED_HOST}" \
         --no-deps \
         "flashinfer-cubin==${FLASHINFER_VERSION}" \
     && grep -v '^quack-kernels==' \
