@@ -256,8 +256,10 @@ RUN python -m pip install \
 COPY docker/constraints-dsv4.txt /tmp/constraints-dsv4.txt
 
 ARG FLASHINFER_CUBIN_INDEX_URL=https://flashinfer.ai/whl
+ARG FLASHINFER_CUBIN_SHA256=25cfd305afa1f34baa2f419bca35db58c369c534ee1961662e83d9fe858ce021
 
-RUN python -m pip install -c /tmp/constraints-dsv4.txt \
+RUN --mount=type=secret,id=flashinfer_cubin,required=false,target=/tmp/flashinfer_cubin-0.6.15.post1-py3-none-any.whl \
+    python -m pip install -c /tmp/constraints-dsv4.txt \
         "sgl-kernel==${SGL_KERNEL_VERSION}" \
         "flashinfer-python==${FLASHINFER_VERSION}" \
         "transformers==${TRANSFORMERS_VERSION}" \
@@ -265,10 +267,17 @@ RUN python -m pip install -c /tmp/constraints-dsv4.txt \
         "apache-tvm-ffi==${TVM_FFI_VERSION}" \
         "cuda-python==13.2.0" \
         "nvidia-cutlass-dsl==4.6.1" \
-    && python -m pip install \
-        --index-url "${FLASHINFER_CUBIN_INDEX_URL}" \
-        --no-deps \
-        "flashinfer-cubin==${FLASHINFER_VERSION}" \
+    && if [[ -s /tmp/flashinfer_cubin-0.6.15.post1-py3-none-any.whl ]]; then \
+        echo "${FLASHINFER_CUBIN_SHA256}  /tmp/flashinfer_cubin-0.6.15.post1-py3-none-any.whl" \
+            | sha256sum --check --strict; \
+        python -m pip install --no-deps \
+            /tmp/flashinfer_cubin-0.6.15.post1-py3-none-any.whl; \
+    else \
+        python -m pip install \
+            --index-url "${FLASHINFER_CUBIN_INDEX_URL}" \
+            --no-deps \
+            "flashinfer-cubin==${FLASHINFER_VERSION}"; \
+    fi \
     && grep -v '^quack-kernels==' \
         /tmp/requirements-dsv4.txt \
         > /tmp/requirements-dsv4-resolved.txt \
@@ -305,6 +314,7 @@ LABEL org.opencontainers.image.title="KTransformers DeepSeek-V4-Flash" \
       io.ktransformers.cuda="12.8.1" \
       io.ktransformers.sm="80,86,89,90,100,120" \
       io.ktransformers.flashinfer="${FLASHINFER_VERSION}" \
+      io.ktransformers.flashinfer-cubin-sha256="${FLASHINFER_CUBIN_SHA256}" \
       io.ktransformers.sglang-source="${SGLANG_SOURCE}" \
       io.ktransformers.sglang-revision="${SGLANG_REF}" \
       io.ktransformers.layerwise-prefill-default="enabled-threshold-2048-swa-0.4"
