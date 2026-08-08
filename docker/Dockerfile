@@ -198,6 +198,7 @@ ARG BUILD_DATE=unknown
 ARG SOURCE_REPOSITORY=https://github.com/yyj6666667/ktransformers
 ARG SGLANG_SOURCE=https://github.com/yyj6666667/sglang
 ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+ARG FLASHINFER_CUBIN_INDEX_URL=https://flashinfer.ai/whl
 ARG TORCH_VERSION=2.9.1
 ARG SGL_KERNEL_VERSION=0.3.21
 ARG FLASHINFER_VERSION=0.6.15.post1
@@ -258,12 +259,15 @@ COPY docker/constraints-dsv4.txt /tmp/constraints-dsv4.txt
 RUN python -m pip install -c /tmp/constraints-dsv4.txt \
         "sgl-kernel==${SGL_KERNEL_VERSION}" \
         "flashinfer-python==${FLASHINFER_VERSION}" \
-        "flashinfer-cubin==${FLASHINFER_VERSION}" \
         "transformers==${TRANSFORMERS_VERSION}" \
         "tilelang==${TILELANG_VERSION}" \
         "apache-tvm-ffi==${TVM_FFI_VERSION}" \
         "cuda-python==13.2.0" \
         "nvidia-cutlass-dsl==4.6.1" \
+    && python -m pip install \
+        --index-url "${FLASHINFER_CUBIN_INDEX_URL}" \
+        --no-deps \
+        "flashinfer-cubin==${FLASHINFER_VERSION}" \
     && grep -v '^quack-kernels==' \
         /tmp/requirements-dsv4.txt \
         > /tmp/requirements-dsv4-resolved.txt \
