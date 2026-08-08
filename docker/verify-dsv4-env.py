@@ -18,8 +18,8 @@ EXPECTED = {
     "torchvision": "0.24.1+cu128",
     "torchaudio": "2.9.1+cu128",
     "sgl-kernel": "0.3.21",
-    "flashinfer-python": "0.6.9",
-    "flashinfer-cubin": "0.6.9",
+    "flashinfer-python": "0.6.15.post1",
+    "flashinfer-cubin": "0.6.15.post1",
     "transformers": "4.57.1",
     "tilelang": "0.1.10",
     "apache-tvm-ffi": "0.1.11",
@@ -85,6 +85,16 @@ def verify_imports(*, instantiate_cpuinfer: bool = True) -> None:
     os.environ["KT_MXFP4_BACKEND"] = "avx2"
 
     import flashinfer  # noqa: F401
+    try:
+        from flashinfer.mla._sparse_mla_sm120 import (  # noqa: F401
+            _DECODE_MAX_TOKENS,
+            _sparse_mla_sm120_paged_attention,
+        )
+    except (AttributeError, ImportError, ModuleNotFoundError) as exc:
+        raise RuntimeError(
+            "FlashInfer is missing the SM120 DeepSeek-V4 sparse MLA API; "
+            "the RTX 50-series decode path would silently fall back to Triton"
+        ) from exc
     import kt_kernel  # noqa: F401
     import sglang  # noqa: F401
     import tilelang  # noqa: F401
