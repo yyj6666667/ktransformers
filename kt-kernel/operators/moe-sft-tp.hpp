@@ -260,7 +260,8 @@ class TP_MOE_SFT : public TP_MOE<T> {
     for (auto& tp : tps) tp->clear_staged_weight_pointers();
   }
 
-  void alloc_or_resize_backward_pool(int tp_idx, size_t required_bytes) {
+  void alloc_or_resize_backward_pool(int tp_idx, size_t required_bytes, int qlen) {
+    const size_t requested_bytes = required_bytes;
     required_bytes = round_up(required_bytes, kAmxAlignment);
     if (required_bytes == 0) {
       backward_temp_pools_[tp_idx] = nullptr;
@@ -272,9 +273,14 @@ class TP_MOE_SFT : public TP_MOE<T> {
       std::lock_guard<std::mutex> guard(shared.lock);
       shared.ensure_tp_count(tp_idx + 1);
       auto& p = shared.pools[tp_idx];
+      const size_t old_capacity = p.work_bytes;
       backward_temp_pools_[tp_idx] =
           SFTTPSharedBackwardPools::acquire(p.work, p.work_bytes, required_bytes, kAmxAlignment);
       backward_temp_pool_bytes_[tp_idx] = p.work_bytes;
+      if (p.work_bytes != old_capacity) {
+        sft_pool_log_event("tp_backward_temp", sft_pool_growth_event(old_capacity),
+                           sft_config.layer_idx, tp_idx, true, requested_bytes, old_capacity, p.work_bytes, qlen);
+      }
     }
   }
 
@@ -786,7 +792,7 @@ class TP_MOE_SFT : public TP_MOE<T> {
         required += round_up(grad_weights_bytes, kAmxAlignment);
       }
 
-      alloc_or_resize_backward_pool(i, required);
+      alloc_or_resize_backward_pool(i, required, qlen);
 
       auto* base = static_cast<uint8_t*>(backward_temp_pools_[i]);
       size_t offset = 0;

@@ -100,15 +100,18 @@ def _aggregate_rows(profile: dict[str, Any]) -> list[dict[str, float | str]]:
 
         for key, total_ns in raw.items():
             parsed = _split_timer_key(key)
-            if parsed is None or total_ns <= 0.0:
+            if parsed is None:
                 continue
             scope, stage = parsed
             calls = raw.get(key[: -len("total_ns")] + "calls", 0.0)
+            byte_count = raw.get(key[: -len("total_ns")] + "bytes", 0.0)
+            if total_ns <= 0.0 and calls <= 0.0 and byte_count <= 0.0:
+                continue
             row = totals[(scope, stage)]
             row["total_ns"] += total_ns
             row["calls"] += calls
             row["tokens"] += scope_tokens.get(scope, 0.0)
-            row["bytes"] += raw.get(key[: -len("total_ns")] + "bytes", 0.0)
+            row["bytes"] += byte_count
 
     rows: list[dict[str, float | str]] = []
     for (scope, stage), values in totals.items():

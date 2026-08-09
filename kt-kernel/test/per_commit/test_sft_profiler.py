@@ -1,6 +1,11 @@
 from types import SimpleNamespace
 
-from kt_kernel.sft.profiler import collect_kt_sft_profile, format_kt_sft_profile, reset_kt_sft_profile
+from kt_kernel.sft.profiler import (
+    _aggregate_rows,
+    collect_kt_sft_profile,
+    format_kt_sft_profile,
+    reset_kt_sft_profile,
+)
 
 
 class _FakeMoe:
@@ -34,6 +39,14 @@ class _FakeMoe:
             "tp.0.backward.base_weight_grad.calls": 1,
             "tp.0.backward.base_weight_grad.worker_cpu.store.total_ns": 2_000_000,
             "tp.0.backward.base_weight_grad.worker_cpu.store.calls": 4,
+            "tp.0.backward.optimizer_grad.overwrite.total_ns": 0,
+            "tp.0.backward.optimizer_grad.overwrite.calls": 1,
+            "tp.0.backward.optimizer_grad.lazy_clear.total_ns": 0,
+            "tp.0.backward.optimizer_grad.lazy_clear.calls": 0,
+            "tp.0.backward.optimizer_grad.lazy_clear.bytes": 3 * 1024 * 1024,
+            "tp.0.backward.buffer_clear.total_ns": 0,
+            "tp.0.backward.buffer_clear.calls": 0,
+            "tp.0.backward.buffer_clear.bytes": 0,
         }
 
     def reset_profile_stats(self):
@@ -61,8 +74,21 @@ def test_collect_and_format_profile():
     assert "2.00" in output
     assert "10.0%" in output
     assert "40.0%" in output
-    worker_store = next(line for line in output.splitlines() if "worker_cpu.store" in line)
+    assert "backward.optimizer_grad.overwrite" in output
+    assert "backward.optimizer_grad.lazy_clear" in output
+    worker_store = next(
+        line for line in output.splitlines() if "worker_cpu.store" in line
+    )
     assert worker_store.endswith("0.0%")
+
+    rows = {(row["scope"], row["stage"]): row for row in _aggregate_rows(profile)}
+    overwrite = rows[("tp.0", "backward.optimizer_grad.overwrite")]
+    assert overwrite["calls"] == 1
+    assert overwrite["total_ms"] == 0
+    lazy_clear = rows[("tp.0", "backward.optimizer_grad.lazy_clear")]
+    assert lazy_clear["calls"] == 0
+    assert lazy_clear["mib"] == 3
+    assert ("tp.0", "backward.buffer_clear") not in rows
 
 
 def test_reset_and_disabled_profile():

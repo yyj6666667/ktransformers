@@ -7,11 +7,23 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cerrno>
+#include <cstdio>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
+#include <limits>
 #include <map>
+#include <mutex>
 #include <string>
+#include <thread>
+#include <time.h>
+
+#if defined(__linux__)
+#include <sys/syscall.h>
+#include <unistd.h>
+#endif
 
 enum class SFTProfileStage : uint8_t {
   // NUMA-local forward stages.
@@ -168,6 +180,118 @@ inline bool sft_profile_enabled_from_env() {
   const char* value = std::getenv("KT_SFT_PROFILE");
   return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0 && std::strcmp(value, "false") != 0 &&
          std::strcmp(value, "False") != 0;
+}
+
+inline bool sft_pool_log_enabled_from_env() {
+  static const bool enabled = [] {
+    const char* value = std::getenv("SFT_POOL_LOG");
+    return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0 &&
+           std::strcmp(value, "false") != 0 && std::strcmp(value, "False") != 0;
+  }();
+  return enabled;
+}
+
+struct SFTPoolLogTimestamp {
+  uint64_t timestamp_ns;
+  const char* clock;
+};
+
+inline SFTPoolLogTimestamp sft_pool_log_timestamp() {
+#if defined(CLOCK_MONOTONIC_RAW)
+  struct timespec raw_value {};
+  if (clock_gettime(CLOCK_MONOTONIC_RAW, &raw_value) == 0) {
+    return {static_cast<uint64_t>(raw_value.tv_sec) * 1000000000ULL + static_cast<uint64_t>(raw_value.tv_nsec),
+            "CLOCK_MONOTONIC_RAW"};
+  }
+#endif
+#if defined(CLOCK_MONOTONIC)
+  struct timespec monotonic_value {};
+  if (clock_gettime(CLOCK_MONOTONIC, &monotonic_value) == 0) {
+    return {static_cast<uint64_t>(monotonic_value.tv_sec) * 1000000000ULL +
+                static_cast<uint64_t>(monotonic_value.tv_nsec),
+            "CLOCK_MONOTONIC"};
+  }
+#endif
+  return {static_cast<uint64_t>(
+              std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch())
+                  .count()),
+          "std::chrono::steady_clock"};
+}
+
+inline int sft_pool_log_rank() {
+  static const int rank = [] {
+    const char* value = std::getenv("RANK");
+    if (value == nullptr || value[0] == '\0') value = std::getenv("LOCAL_RANK");
+    if (value == nullptr || value[0] == '\0') return -1;
+    char* end = nullptr;
+    errno = 0;
+    const long parsed = std::strtol(value, &end, 10);
+    if (errno != 0 || end == value || *end != '\0' || parsed < std::numeric_limits<int>::min() ||
+        parsed > std::numeric_limits<int>::max()) {
+      return -1;
+    }
+    return static_cast<int>(parsed);
+  }();
+  return rank;
+}
+
+inline int64_t sft_pool_log_pid() {
+#if defined(__linux__)
+  return static_cast<int64_t>(getpid());
+#else
+  return -1;
+#endif
+}
+
+inline uint64_t sft_pool_log_tid() {
+#if defined(__linux__) && defined(SYS_gettid)
+  return static_cast<uint64_t>(syscall(SYS_gettid));
+#else
+  return static_cast<uint64_t>(std::hash<std::thread::id>{}(std::this_thread::get_id()));
+#endif
+}
+
+inline const char* sft_pool_growth_event(size_t old_capacity_bytes) {
+  return old_capacity_bytes == 0 ? "allocate" : "grow";
+}
+
+inline FILE* sft_pool_log_file() {
+  static FILE* file = [] {
+    const char* path = std::getenv("SFT_POOL_LOG_FILE");
+    if (path == nullptr || path[0] == '\0') path = "sft_pool_log.jsonl";
+    return std::fopen(path, "a");
+  }();
+  return file;
+}
+
+inline std::mutex& sft_pool_log_mutex() {
+  static std::mutex mutex;
+  return mutex;
+}
+
+// Emit one self-contained JSON object. Callers only emit real capacity changes
+// (allocate/grow/free), never per-layer reuse or phase-entry events. Rank-local
+// files avoid cross-process locking; each rare record is flushed for postmortem
+// safety. Pool and event are internal literals and need no JSON escaping.
+inline void sft_pool_log_event(const char* pool, const char* event, int layer, int numa, bool shared, size_t requested,
+                               size_t old_capacity, size_t new_capacity, int qlen = 0, int cache_depth = 0) {
+  if (!sft_pool_log_enabled_from_env()) return;
+  FILE* file = sft_pool_log_file();
+  if (file == nullptr) return;
+
+  std::lock_guard<std::mutex> guard(sft_pool_log_mutex());
+  const SFTPoolLogTimestamp timestamp = sft_pool_log_timestamp();
+  std::fprintf(file,
+               "{\"schema\":\"kt.sft.pool_event.v1\",\"clock\":\"%s\",\"timestamp_ns\":%llu,\"rank\":%d,\"pid\":%lld,"
+               "\"tid\":%llu,\"layer\":%d,\"numa\":%d,\"pool\":\"%s\",\"event\":\"%s\","
+               "\"shared\":%s,\"qlen\":%d,\"cache_depth\":%d,\"requested_bytes\":%llu,"
+               "\"old_capacity_bytes\":%llu,\"new_capacity_bytes\":%llu}\n",
+               timestamp.clock, static_cast<unsigned long long>(timestamp.timestamp_ns), sft_pool_log_rank(),
+               static_cast<long long>(sft_pool_log_pid()), static_cast<unsigned long long>(sft_pool_log_tid()), layer,
+               numa, pool, event, shared ? "true" : "false", qlen, cache_depth,
+               static_cast<unsigned long long>(requested), static_cast<unsigned long long>(old_capacity),
+               static_cast<unsigned long long>(new_capacity));
+  std::fflush(file);
 }
 
 class SFTProfiler {

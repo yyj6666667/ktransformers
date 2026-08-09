@@ -160,58 +160,6 @@ inline bool is_nan_check_enabled() {
 }
 
 // =====================================================
-// Pool Memory Logger — writes per-call alloc/free events to file
-// Enable: set SFT_POOL_LOG=1 (or any non-zero)
-// Output: sft_pool_log.txt in current directory (append mode)
-// Disable: return false; at the top of is_pool_log_enabled()
-// =====================================================
-inline bool is_pool_log_enabled() {
-  // return false;
-  static int enabled = -1;
-  if (enabled < 0) {
-    const char* env = getenv("SFT_POOL_LOG");
-    enabled = (env && env[0] != '0') ? 1 : 0;
-  }
-  return enabled == 1;
-}
-
-inline FILE* get_pool_log_file() {
-  static FILE* f = nullptr;
-  if (f == nullptr) {
-    const char* path = getenv("SFT_POOL_LOG_FILE");
-    if (!path) path = "sft_pool_log.txt";
-    f = fopen(path, "a");
-    if (f) {
-      fprintf(f,
-              "# event | layer | numa | qlen | cache_stack_top | "
-              "fwd_work_bytes | cache_pool_bytes | bwd_pool_bytes | "
-              "alloc_request_bytes | detail\n");
-      fflush(f);
-    }
-  }
-  return f;
-}
-
-// Printf-style pool log: writes one line per event
-// event: "fwd_alloc", "fwd_cache_alloc", "bwd_alloc", "cache_free", "fwd_enter", "bwd_enter", etc.
-#define SFT_POOL_LOG(event, layer, numa, qlen, cache_top, fwd_bytes, cache_bytes, bwd_bytes, req_bytes, ...)          \
-  do {                                                                                                                \
-    if (is_pool_log_enabled()) {                                                                                      \
-      FILE* _pf = get_pool_log_file();                                                                                \
-      if (_pf) {                                                                                                      \
-        fprintf(_pf,                                                                                                  \
-                "%-16s | L%02d | N%d | q%-5d | cst=%-2d | "                                                           \
-                "fwd=%10zu | cache=%10zu | bwd=%10zu | req=%10zu | ",                                                 \
-                event, layer, numa, qlen, cache_top, (size_t)(fwd_bytes), (size_t)(cache_bytes), (size_t)(bwd_bytes), \
-                (size_t)(req_bytes));                                                                                 \
-        fprintf(_pf, __VA_ARGS__);                                                                                    \
-        fprintf(_pf, "\n");                                                                                           \
-        fflush(_pf);                                                                                                  \
-      }                                                                                                               \
-    }                                                                                                                 \
-  } while (0)
-
-// =====================================================
 // Type trait to detect if kernel supports standard mat_mul API
 // Only these kernels have the standard amx::mat_mul(m,n,k,ba,bb,bc,ith,nth) overload
 // KGroup kernels use mat_mul_kgroup() with different BufferB interface
@@ -428,16 +376,22 @@ class AMX_SFT_MOE_TP : public BaseMOE<T> {
     return ptr;
   }
 
-  void alloc_or_resize_forward_pool(size_t required_bytes) {
+  void alloc_or_resize_forward_pool(size_t required_bytes, int qlen) {
     auto& shared = SFTSharedPools::instance();
     std::lock_guard<std::mutex> guard(shared.mu);
     shared.ensure_numa_count(tp_part_idx + 1);
     auto& p = shared.pools[tp_part_idx];
+    const size_t old_capacity = p.fwd_work_bytes;
     forward_pool_ = SFTSharedPools::acquire(p.fwd_work, p.fwd_work_bytes, required_bytes, kAmxAlignment);
     forward_pool_bytes_ = p.fwd_work_bytes;
+    if (p.fwd_work_bytes != old_capacity) {
+      sft_pool_log_event("forward_work", sft_pool_growth_event(old_capacity), config_.layer_idx,
+                         tp_part_idx, true, required_bytes, old_capacity, p.fwd_work_bytes, qlen, cache_stack_top_);
+    }
   }
 
-  void alloc_or_resize_cache_pool(size_t required_bytes) {
+  void alloc_or_resize_cache_pool(size_t required_bytes, int qlen) {
+    const size_t requested_bytes = required_bytes;
     required_bytes = round_up(required_bytes, kAmxAlignment);
     if (required_bytes == 0) return;
     if (config_.share_cache_pool) {
@@ -447,11 +401,17 @@ class AMX_SFT_MOE_TP : public BaseMOE<T> {
       std::lock_guard<std::mutex> guard(shared.mu);
       shared.ensure_numa_count(tp_part_idx + 1);
       auto& p = shared.pools[tp_part_idx];
+      const size_t old_capacity = p.cache_bytes;
       cache_pool_ = SFTSharedPools::acquire(p.cache, p.cache_bytes, required_bytes, kAmxAlignment);
       cache_pool_bytes_ = p.cache_bytes;
       cache_locally_owned_ = false;
+      if (p.cache_bytes != old_capacity) {
+        sft_pool_log_event("cache", sft_pool_growth_event(old_capacity), config_.layer_idx,
+                           tp_part_idx, true, requested_bytes, old_capacity, p.cache_bytes, qlen, cache_stack_top_);
+      }
     } else {
       // Per-layer mode: each layer has its own cache pool.
+      const size_t old_capacity = cache_pool_bytes_;
       if (required_bytes <= cache_pool_bytes_) return;
       if (cache_pool_ && cache_locally_owned_) {
         free(cache_pool_);
@@ -461,6 +421,8 @@ class AMX_SFT_MOE_TP : public BaseMOE<T> {
       cache_pool_ = alloc_aligned(kAmxAlignment, required_bytes);
       cache_pool_bytes_ = required_bytes;
       cache_locally_owned_ = true;
+      sft_pool_log_event("cache", sft_pool_growth_event(old_capacity), config_.layer_idx,
+                         tp_part_idx, false, requested_bytes, old_capacity, cache_pool_bytes_, qlen, cache_stack_top_);
     }
   }
 
@@ -673,13 +635,18 @@ class AMX_SFT_MOE_TP : public BaseMOE<T> {
   bool lora_a_bb_prepared_ = false;  // For gate_lora_a_bb_ and up_lora_a_bb_ (used in backward)
 
  private:
-  void alloc_or_resize_backward_pool(size_t required_bytes) {
+  void alloc_or_resize_backward_pool(size_t required_bytes, int qlen) {
     auto& shared = SFTSharedPools::instance();
     std::lock_guard<std::mutex> guard(shared.mu);
     shared.ensure_numa_count(tp_part_idx + 1);
     auto& p = shared.pools[tp_part_idx];
+    const size_t old_capacity = p.bwd_work_bytes;
     backward_pool_ = SFTSharedPools::acquire(p.bwd_work, p.bwd_work_bytes, required_bytes, kAmxAlignment);
     backward_pool_bytes_ = p.bwd_work_bytes;
+    if (p.bwd_work_bytes != old_capacity) {
+      sft_pool_log_event("backward_work", sft_pool_growth_event(old_capacity), config_.layer_idx,
+                         tp_part_idx, true, required_bytes, old_capacity, p.bwd_work_bytes, qlen, cache_stack_top_);
+    }
   }
 
   void alloc_or_resize_backward_bb(size_t required_bytes) {
@@ -687,8 +654,13 @@ class AMX_SFT_MOE_TP : public BaseMOE<T> {
     std::lock_guard<std::mutex> guard(shared.mu);
     shared.ensure_numa_count(tp_part_idx + 1);
     auto& p = shared.pools[tp_part_idx];
+    const size_t old_capacity = p.bwd_bb_bytes;
     backward_bb_pool_ = SFTSharedPools::acquire(p.bwd_bb, p.bwd_bb_bytes, required_bytes, kAmxAlignment);
     backward_bb_pool_bytes_ = p.bwd_bb_bytes;
+    if (p.bwd_bb_bytes != old_capacity) {
+      sft_pool_log_event("backward_bb", sft_pool_growth_event(old_capacity), config_.layer_idx,
+                         tp_part_idx, true, required_bytes, old_capacity, p.bwd_bb_bytes);
+    }
   }
 
   size_t base_backward_bb_required_size(int n, int k) const {
@@ -793,7 +765,7 @@ class AMX_SFT_MOE_TP : public BaseMOE<T> {
    *
    * @param alloc_cache Whether to allocate cache buffers (for backward pass)
    */
-  void alloc_forward_buffers(bool alloc_cache) {
+  void alloc_forward_buffers(bool alloc_cache, int qlen) {
     // 1. Working buffers → shared pool (across all layers on same NUMA)
     size_t work_required = 0;
     work_required += round_up(lora_ba_pool_bytes_, kAmxAlignment);
@@ -808,11 +780,7 @@ class AMX_SFT_MOE_TP : public BaseMOE<T> {
       work_required = std::max(work_required, base_grad_accumulator_bytes);
     }
 
-    alloc_or_resize_forward_pool(work_required);
-
-    SFT_POOL_LOG("fwd_work", config_.layer_idx, tp_part_idx, 0, cache_stack_top_, forward_pool_bytes_,
-                 cache_pool_bytes_, backward_pool_bytes_, work_required, "shared_pool alloc_cache=%d",
-                 (int)alloc_cache);
+    alloc_or_resize_forward_pool(work_required, qlen);
 
     auto* work_base = static_cast<uint8_t*>(forward_pool_);
     size_t offset = 0;
@@ -843,10 +811,7 @@ class AMX_SFT_MOE_TP : public BaseMOE<T> {
       cache_required += round_up(cache_down_lora_u_bytes, kAmxAlignment);
       cache_required += round_up(cache_down_output_bytes_, kAmxAlignment);
 
-      alloc_or_resize_cache_pool(cache_required);
-
-      SFT_POOL_LOG("fwd_cache", config_.layer_idx, tp_part_idx, 0, cache_stack_top_, forward_pool_bytes_,
-                   cache_pool_bytes_, backward_pool_bytes_, cache_required, "cache_pool alloc");
+      alloc_or_resize_cache_pool(cache_required, qlen);
 
       auto* cache_base = static_cast<uint8_t*>(cache_pool_);
       size_t cache_offset = 0;
@@ -903,7 +868,7 @@ class AMX_SFT_MOE_TP : public BaseMOE<T> {
    * Called at the start of backward.
    * Includes: gradient buffers + backward working buffers
    */
-  void alloc_backward_buffers() {
+  void alloc_backward_buffers(int qlen) {
     // Allocate backward-phase buffers from a single resizable pool (like forward_pool_).
     size_t required = 0;
     required += round_up(grad_buffer_bytes_, kAmxAlignment) * 3;  // grad_intermediate, grad_gate_output, grad_up_output
@@ -918,10 +883,7 @@ class AMX_SFT_MOE_TP : public BaseMOE<T> {
     required += round_up(down_lora_grad_b_accum_pool_bytes_, kAmxAlignment);
     required += round_up(down_lora_grad_a_accum_pool_bytes_, kAmxAlignment);
 
-    alloc_or_resize_backward_pool(required);
-
-    SFT_POOL_LOG("bwd_alloc", config_.layer_idx, tp_part_idx, 0, cache_stack_top_, forward_pool_bytes_,
-                 cache_pool_bytes_, backward_pool_bytes_, required, "backward_pool alloc");
+    alloc_or_resize_backward_pool(required, qlen);
 
     auto* base = static_cast<uint8_t*>(backward_pool_);
     size_t offset = 0;
@@ -959,9 +921,6 @@ class AMX_SFT_MOE_TP : public BaseMOE<T> {
    * Called at the end of backward.
    */
   void free_seqlen_buffers() {
-    SFT_POOL_LOG("cache_free", config_.layer_idx, tp_part_idx, 0, cache_stack_top_, forward_pool_bytes_,
-                 cache_pool_bytes_, backward_pool_bytes_, cache_pool_bytes_, "freeing cache_pool");
-
     // Hard check: all cache entries must have been popped before freeing.
     // A non-zero cache_stack_top_ means backward didn't consume all pushes,
     // and freeing would leave dangling pointers in the cache stack.
@@ -972,8 +931,11 @@ class AMX_SFT_MOE_TP : public BaseMOE<T> {
               cache_stack_top_, config_.layer_idx, tp_part_idx);
       return;  // Do NOT free — better to leak than corrupt
     }
+    const size_t old_capacity = cache_pool_bytes_;
     if (cache_locally_owned_ && cache_pool_) {
       free(cache_pool_);
+      sft_pool_log_event("cache", "free", config_.layer_idx, tp_part_idx, false, 0, old_capacity, 0, 0,
+                         cache_stack_top_);
     }
     cache_pool_ = nullptr;
     cache_pool_bytes_ = 0;
@@ -1064,9 +1026,6 @@ class AMX_SFT_MOE_TP : public BaseMOE<T> {
     auto stage_start = profiler_.start();
     active_lora_dropout_seed_ = ++lora_dropout_sequence_;
 
-    SFT_POOL_LOG("fwd_enter", config_.layer_idx, tp_part_idx, qlen, cache_stack_top_, forward_pool_bytes_,
-                 cache_pool_bytes_, backward_pool_bytes_, 0, "save_bwd=%d", (int)save_for_backward);
-
     // =====================================================
     // Bounds Check: Verify qlen doesn't exceed max_len
     // =====================================================
@@ -1085,7 +1044,7 @@ class AMX_SFT_MOE_TP : public BaseMOE<T> {
     // ★ Allocate forward-phase buffers ★
     // LoRA working buffers are always needed for forward (even for inference)
     // Cache buffers are only needed when save_for_backward=true
-    alloc_forward_buffers(save_for_backward);
+    alloc_forward_buffers(save_for_backward, qlen);
 
     auto pool = config_.pool->get_subpool(tp_part_idx);
 
@@ -1610,8 +1569,6 @@ class AMX_SFT_MOE_TP : public BaseMOE<T> {
     auto stage_start = profiler_.start();
     // If full_intermediate_size not provided, use local (non-TP mode)
     if (full_intermediate_size == 0) full_intermediate_size = config_.intermediate_size;
-    SFT_POOL_LOG("bwd_enter", config_.layer_idx, tp_part_idx, 0, cache_stack_top_, forward_pool_bytes_,
-                 cache_pool_bytes_, backward_pool_bytes_, 0, "backward entry");
 
     // Pop cache from stack
     ForwardCache cache = pop_cache();
@@ -1682,7 +1639,7 @@ class AMX_SFT_MOE_TP : public BaseMOE<T> {
     }
 
     // ★ Allocate backward-phase buffers ★
-    alloc_backward_buffers();
+    alloc_backward_buffers(qlen);
 
     // ★ share_backward_bb: check if async repack already prepared this layer ★
     if (config_.share_backward_bb) {
@@ -3702,12 +3659,14 @@ class AMX_SFT_MOE_TP : public BaseMOE<T> {
       init_fp8_sft_buffers(max_m);
     }
 
-    // Pool logger: static allocation summary (printed once per instance at init)
-    SFT_POOL_LOG("init_static", config_.layer_idx, tp_part_idx, config_.max_len, 0, lora_bb_pool_bytes_,
-                 backward_bb_pool_bytes_, 0, backward_bb_pool_bytes_ + lora_bb_pool_bytes_,
-                 "static_alloc: expert_num=%d hidden=%d inter=%d lora_bb=%.2fGB bwd_bb=%.2fGB", config_.expert_num,
-                 config_.hidden_size, config_.intermediate_size, lora_bb_pool_bytes_ / 1024.0 / 1024.0 / 1024.0,
-                 backward_bb_pool_bytes_ / 1024.0 / 1024.0 / 1024.0);
+    if (lora_bb_pool_ != nullptr) {
+      sft_pool_log_event("lora_bb", "allocate", config_.layer_idx, tp_part_idx, false, lora_bb_pool_bytes_, 0,
+                         lora_bb_pool_bytes_);
+    }
+    if (backward_bb_locally_owned_ && backward_bb_pool_ != nullptr) {
+      sft_pool_log_event("backward_bb", "allocate", config_.layer_idx, tp_part_idx, false,
+                         backward_bb_pool_bytes_, 0, backward_bb_pool_bytes_);
+    }
   }
 
   /**
