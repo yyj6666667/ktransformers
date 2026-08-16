@@ -20,6 +20,17 @@ from .backend import (
     get_int8_runtime,
 )
 from .weight_manifest import validate_persistent_int8_weights
+from .artifacts import (
+    KTArtifactError,
+    claim_kt_routed_expert_subtrees,
+    hide_kt_routed_experts_from_dispatch,
+    is_kt_int8_routed_expert_base_parameter,
+    is_kt_routed_expert_parameter_name,
+    is_kt_supported_moe_model,
+    mark_kt_int8_routed_expert_base_parameters,
+    prepare_kt_non_expert_device_map,
+    project_kt_routed_experts_out_of_device_map,
+)
 from .dist_utils import get_activation_checkpoint_context_fn
 from .base import BaseSFTMoEWrapper, KExpertsSFTBuffer
 from .amx import AMXSFTMoEWrapper
@@ -38,6 +49,7 @@ from .autograd import KTMoEFunction
 from .layer import KTMoELayerWrapper
 from .weights import (
     extract_moe_weights,
+    get_kt_expert_placeholders,
     load_block_fp8_experts_from_checkpoint_files,
     load_experts_from_checkpoint_files,
     load_experts_from_kt_weight_path,
@@ -45,8 +57,11 @@ from .weights import (
     BlockFP8ExpertWeights,
 )
 from .lora import (
+    KTAdaptationResult,
     kt_adapt_peft_lora,
     get_kt_lora_params,
+    get_kt_named_trainable_params,
+    get_kt_rank_local_parameter_names,
     get_kt_trainable_params,
     update_kt_lora_pointers,
     sync_kt_lora_gradients,
@@ -76,6 +91,15 @@ __all__ = [
     "FP8_SFT_METHOD",
     "get_fp8_runtime",
     "validate_persistent_int8_weights",
+    "KTArtifactError",
+    "claim_kt_routed_expert_subtrees",
+    "hide_kt_routed_experts_from_dispatch",
+    "is_kt_int8_routed_expert_base_parameter",
+    "is_kt_routed_expert_parameter_name",
+    "is_kt_supported_moe_model",
+    "mark_kt_int8_routed_expert_base_parameters",
+    "prepare_kt_non_expert_device_map",
+    "project_kt_routed_experts_out_of_device_map",
     "get_activation_checkpoint_context_fn",
     "BaseSFTMoEWrapper",
     "KExpertsSFTBuffer",
@@ -92,13 +116,17 @@ __all__ = [
     "KTMoEFunction",
     "KTMoELayerWrapper",
     "extract_moe_weights",
+    "get_kt_expert_placeholders",
     "load_block_fp8_experts_from_checkpoint_files",
     "load_experts_from_checkpoint_files",
     "load_experts_from_kt_weight_path",
     "INT8ExpertWeights",
     "BlockFP8ExpertWeights",
+    "KTAdaptationResult",
     "kt_adapt_peft_lora",
     "get_kt_lora_params",
+    "get_kt_named_trainable_params",
+    "get_kt_rank_local_parameter_names",
     "get_kt_trainable_params",
     "update_kt_lora_pointers",
     "sync_kt_lora_gradients",

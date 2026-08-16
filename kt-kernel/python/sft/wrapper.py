@@ -166,20 +166,11 @@ def _sync_rank0_wrap_error(
 
 
 def _get_kt_config(kt_plugin: Any):
-    """Extract KTConfig from a KTransformersPlugin or compatible object.
-
-    KTConfig field names use kt_ prefix, matching the dict keys in
-    HfTrainerKTConfig exactly — no name-mapping needed.
-    """
+    """Resolve a private KTConfig from a compatible public container."""
     from .config import KTConfig
 
     if isinstance(kt_plugin, KTConfig):
         return kt_plugin
-
-    kt_config = getattr(kt_plugin, "kt_config", None)
-    if kt_config is not None and isinstance(kt_config, KTConfig):
-        return kt_config
-
     return KTConfig.from_object(kt_plugin)
 
 
@@ -1235,7 +1226,9 @@ def load_kt_model(
             )
         cfg.kt_skip_expert_loading = True
 
-    set_kt_config(kt_plugin)
+    # Transformers consumes the resolved fields while from_pretrained runs;
+    # Accelerate deliberately keeps those fields opaque under plugin.kt_config.
+    set_kt_config(cfg)
     try:
         model = AutoModelForCausalLM.from_pretrained(model_name_or_path, **loading_kwargs)
     finally:

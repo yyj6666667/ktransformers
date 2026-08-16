@@ -212,6 +212,66 @@ def _clear_original_expert_weights(
     logger.info(f"Replaced {replaced_count} expert weight params")
 
 
+_KT_RANK_LOCAL_PARAMETER_NAMES = "_kt_rank_local_parameter_names"
+
+
+def get_kt_expert_placeholders(model: nn.Module) -> dict[str, nn.Parameter]:
+    """Resolve current placeholder identities from stable, cached FQNs."""
+    placeholder_ids: set[int] = set()
+    for module in model.modules():
+        if not getattr(module, "_is_kt_moe_wrapper", False):
+            continue
+
+        experts_attr = getattr(module, "_experts_attr", None)
+        experts = getattr(module, experts_attr, None) if isinstance(experts_attr, str) else None
+        if not isinstance(experts, nn.Module):
+            raise RuntimeError("KT MoE wrapper does not expose a valid expert subtree")
+
+        placeholder_ids.update(
+            id(parameter)
+            for parameter in experts.parameters(recurse=True)
+            if getattr(parameter, "_kt_zero_storage", False)
+        )
+
+    named_parameters: dict[str, nn.Parameter] = {}
+    discovered: dict[str, nn.Parameter] = {}
+    for fqn, parameter in model.named_parameters(remove_duplicate=False):
+        if fqn in named_parameters and named_parameters[fqn] is not parameter:
+            raise RuntimeError(
+                f"Model parameter FQN {fqn!r} resolves to conflicting Parameter identities"
+            )
+        named_parameters[fqn] = parameter
+        if id(parameter) not in placeholder_ids:
+            continue
+        if fqn in discovered and discovered[fqn] is not parameter:
+            raise RuntimeError(f"KT expert placeholder FQN {fqn!r} resolves to conflicting Parameter identities")
+        discovered[fqn] = parameter
+    found_ids = {id(parameter) for parameter in discovered.values()}
+    if found_ids != placeholder_ids:
+        raise RuntimeError("KT expert placeholder is not registered in the model parameter tree")
+
+    cached_names = getattr(model, _KT_RANK_LOCAL_PARAMETER_NAMES, None)
+    if cached_names is None:
+        cached_names = tuple(sorted(discovered))
+        setattr(model, _KT_RANK_LOCAL_PARAMETER_NAMES, cached_names)
+    elif (
+        not isinstance(cached_names, tuple)
+        or any(not isinstance(name, str) or not name for name in cached_names)
+        or tuple(sorted(set(cached_names))) != cached_names
+    ):
+        raise RuntimeError("KT rank-local parameter-name cache is invalid")
+    elif set(discovered).difference(cached_names):
+        raise RuntimeError("KT expert placeholder inventory changed after its initial discovery")
+
+    placeholders = {}
+    for fqn in cached_names:
+        parameter = named_parameters.get(fqn)
+        if parameter is None:
+            raise RuntimeError(f"Cached KT rank-local parameter FQN is no longer registered: {fqn!r}")
+        placeholders[fqn] = parameter
+    return placeholders
+
+
 # =============================================================================
 # kt_weight_path Loading Functions
 # =============================================================================
