@@ -17,7 +17,7 @@ register_cpu_ci(est_time=120, suite="default")
 
 import pytest
 import torch
-import kt_kernel_ext
+from kt_kernel import kt_kernel_ext
 
 KT_KERNEL_ROOT = Path(__file__).resolve().parents[2]
 

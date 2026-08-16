@@ -18,7 +18,7 @@ from ci.ci_register import register_cpu_ci
 register_cpu_ci(est_time=60, suite="default")
 
 import torch
-import kt_kernel_ext
+from kt_kernel import kt_kernel_ext
 
 expert_num = 8
 hidden_size = 256

@@ -68,6 +68,7 @@ jobs:
       - name: Run KT-Kernel CPU tests
         timeout-minutes: 60
         run: |
+          python3 -m pip install 'pytest>=7.0.0' 'psutil>=5.9.0'
           cd kt-kernel/test
           python3 run_suite.py --hw cpu --suite default
 

@@ -100,6 +100,12 @@ def run_unittest_files(
             nonlocal process
 
             filename = os.path.join(os.getcwd(), filename)
+            environment = os.environ.copy()
+            test_root = os.getcwd()
+            existing_pythonpath = environment.get("PYTHONPATH")
+            environment["PYTHONPATH"] = os.pathsep.join(
+                part for part in (test_root, existing_pythonpath) if part
+            )
             print(
                 f".\n.\nBegin ({i}/{len(files) - 1}):\npython3 {filename}\n.\n.\n",
                 flush=True,
@@ -107,7 +113,7 @@ def run_unittest_files(
             tic = time.perf_counter()
 
             process = subprocess.Popen(
-                ["python3", filename], stdout=None, stderr=None, env=os.environ
+                ["python3", filename], stdout=None, stderr=None, env=environment
             )
             process.wait()
             elapsed = time.perf_counter() - tic

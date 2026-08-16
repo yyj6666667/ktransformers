@@ -6,15 +6,9 @@ from __future__ import annotations
 import json
 import math
 import os
-import sys
 from dataclasses import dataclass
 
 import pytest
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from ci.ci_register import register_cpu_ci
-
-register_cpu_ci(est_time=90, suite="default")
 
 try:
     import torch
@@ -48,6 +42,19 @@ GRAD_SHAPES = {
     "down_lora_a": (EXPERTS, RANK, INTERMEDIATE),
     "down_lora_b": (EXPERTS, HIDDEN, RANK),
 }
+
+
+def _require_int8_sft_extension() -> None:
+    if _IMPORT_ERROR is not None:
+        message = f"kt-kernel extension unavailable: {_IMPORT_ERROR}"
+        if os.environ.get("KT_REQUIRE_SFT_EXTENSION") == "1":
+            pytest.fail(message)
+        pytest.skip(message)
+    if not hasattr(kt_kernel_ext.moe, "AMXInt8_SFT_MOE"):
+        message = "AMXInt8_SFT_MOE is unavailable in this build"
+        if os.environ.get("KT_REQUIRE_SFT_EXTENSION") == "1":
+            pytest.fail(message)
+        pytest.skip(message)
 
 
 @dataclass
@@ -415,19 +422,13 @@ def _run_contract():
 
 @pytest.mark.cpu
 def test_int8_sft_numerical_and_optimizer_windows():
-    if _IMPORT_ERROR is not None:
-        pytest.skip(f"kt-kernel extension unavailable: {_IMPORT_ERROR}")
-    if not hasattr(kt_kernel_ext.moe, "AMXInt8_SFT_MOE"):
-        pytest.skip("AMXInt8_SFT_MOE is unavailable in this build")
+    _require_int8_sft_extension()
     _run_contract()
 
 
 @pytest.mark.cpu
 def test_int8_async_load_error_reaches_python(tmp_path):
-    if _IMPORT_ERROR is not None:
-        pytest.skip(f"kt-kernel extension unavailable: {_IMPORT_ERROR}")
-    if not hasattr(kt_kernel_ext.moe, "AMXInt8_SFT_MOE"):
-        pytest.skip("AMXInt8_SFT_MOE is unavailable in this build")
+    _require_int8_sft_extension()
 
     cpu_infer, tp_count, _ = _make_cpu_infer()
     physical_to_logical_map = torch.arange(1, dtype=torch.int64).contiguous()

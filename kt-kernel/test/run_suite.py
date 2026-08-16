@@ -1,5 +1,7 @@
 import argparse
 import glob
+import os
+import subprocess
 import sys
 from typing import List
 
@@ -31,18 +33,38 @@ def _filter_tests(
     return ret
 
 
+def _run_pytest_sft_files(hw: HWBackend, suite: str) -> int:
+    if hw != HWBackend.CPU or suite != "default":
+        return 0
+    files = sorted(glob.glob("per_commit/**/test_sft_*.py", recursive=True))
+    files.extend(sorted(glob.glob("per_commit/**/test_cpu_detect_metadata.py", recursive=True)))
+    if not files:
+        return 0
+    command = [sys.executable, "-m", "pytest", "-q", *files]
+    print(f"Running pytest suite: {' '.join(command)}", flush=True)
+    environment = os.environ.copy()
+    environment["KT_REQUIRE_SFT_EXTENSION"] = "1"
+    return subprocess.run(command, check=False, env=environment).returncode
+
+
 def run_per_commit(hw: HWBackend, suite: str):
     files = glob.glob("per_commit/**/*.py", recursive=True)
     # Exclude __init__.py files as they don't contain test registrations
     files = [f for f in files if not f.endswith("__init__.py")]
+    pytest_files = set(glob.glob("per_commit/**/test_sft_*.py", recursive=True))
+    pytest_files.update(glob.glob("per_commit/**/test_cpu_detect_metadata.py", recursive=True))
+    files = [file for file in files if file not in pytest_files]
     ci_tests = _filter_tests(collect_tests(files), hw, suite)
     test_files = [TestFile(t.filename, t.est_time) for t in ci_tests]
 
-    return run_unittest_files(
+    registry_result = run_unittest_files(
         test_files,
         timeout_per_file=1200,
         continue_on_error=False,
     )
+    if registry_result != 0:
+        return registry_result
+    return 0 if _run_pytest_sft_files(hw, suite) == 0 else -1
 
 
 def main():
