@@ -14,6 +14,9 @@ from pathlib import Path
 
 
 EXPECTED = {
+    "ktransformers": "0.7.0.post1",
+    "kt-kernel": "0.7.0.post1",
+    "sglang-kt": "0.7.0.post1",
     "torch": "2.9.1+cu128",
     "torchvision": "0.24.1+cu128",
     "torchaudio": "2.9.1+cu128",
@@ -26,6 +29,15 @@ EXPECTED = {
     "cuda-python": "13.2.0",
     "nvidia-cutlass-dsl": "4.6.1",
 }
+
+CPU_VARIANTS = (
+    "avx2",
+    "avx512_base",
+    "avx512_vnni",
+    "avx512_vbmi",
+    "avx512_bf16",
+    "amx",
+)
 
 
 def verify_versions() -> None:
@@ -105,12 +117,15 @@ def verify_imports(*, instantiate_cpuinfer: bool = True) -> None:
     # DSV4's default MXFP4 path must remain portable to AVX2-only hosts.  The
     # entrypoint selects this variant at runtime when AVX512/AMX is absent.
     package_dir = Path(kt_kernel.__file__).resolve().parent
-    avx2_variants = list(package_dir.glob("_kt_kernel_ext_avx2.*.so"))
-    if not avx2_variants:
-        raise RuntimeError(
-            "DSV4 image is missing the AVX2 kt-kernel variant; "
-            "build with CPUINFER_BUILD_ALL_VARIANTS=1"
-        )
+    variant_files = {}
+    for variant in CPU_VARIANTS:
+        matches = list(package_dir.glob(f"_kt_kernel_ext_{variant}.*.so"))
+        if len(matches) != 1:
+            raise RuntimeError(
+                f"DSV4 image expected exactly one {variant} kt-kernel variant, "
+                f"found {len(matches)}; build with CPUINFER_BUILD_ALL_VARIANTS=1"
+            )
+        variant_files[variant] = matches[0]
 
     if kt_kernel.__cpu_variant__ != "avx2":
         raise RuntimeError(
@@ -118,7 +133,7 @@ def verify_imports(*, instantiate_cpuinfer: bool = True) -> None:
             f"but loaded {kt_kernel.__cpu_variant__!r}"
         )
 
-    verify_avx2_instruction_contract(avx2_variants[0])
+    verify_avx2_instruction_contract(variant_files["avx2"])
 
     # Exercise the exact native constructor that previously raised SIGILL on
     # AVX2-only hosts.  Keep this after the binary scan so an invalid artifact
@@ -137,7 +152,8 @@ def verify_imports(*, instantiate_cpuinfer: bool = True) -> None:
         f"torch={torch.__version__}",
         f"cuda={torch.version.cuda}",
         f"transformers={transformers.__version__}",
-        f"avx2_variant={avx2_variants[0].name}",
+        "cpu_variants=" + ",".join(CPU_VARIANTS),
+        f"avx2_variant={variant_files['avx2'].name}",
         f"avx2_cpuinfer={'ok' if instantiate_cpuinfer else 'deferred'}",
     )
 

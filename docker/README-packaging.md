@@ -22,6 +22,7 @@ docker buildx build \
   --target dsv4 \
   --build-arg IMAGE_VERSION=dsv4-flash-cu128 \
   --build-arg VCS_REF="$(git rev-parse HEAD)" \
+  --build-arg KT_UPSTREAM_REF="$(git rev-parse upstream/main)" \
   --build-arg SGLANG_REF="$(git -C third_party/sglang rev-parse HEAD)" \
   --build-arg SOURCE_REPOSITORY="$(git config --get remote.origin.url)" \
   --build-arg SGLANG_SOURCE="$(git config -f .gitmodules --get submodule.third_party/sglang.url)" \

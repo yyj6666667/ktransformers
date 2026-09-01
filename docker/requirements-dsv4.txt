@@ -1,4 +1,4 @@
-# Runtime dependencies from sglang-kt 0.6.4.
+# Runtime dependencies from sglang-kt 0.7.0.post1.
 #
 # Intentionally omitted and installed separately by Dockerfile:
 #   torch / torchvision / torchaudio

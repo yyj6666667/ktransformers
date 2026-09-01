@@ -193,6 +193,7 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 ARG IMAGE_VERSION=dev
 ARG VCS_REF=unknown
+ARG KT_UPSTREAM_REF=unknown
 ARG SGLANG_REF=unknown
 ARG BUILD_DATE=unknown
 ARG SOURCE_REPOSITORY=https://github.com/yyj6666667/ktransformers
@@ -304,6 +305,7 @@ LABEL org.opencontainers.image.title="KTransformers DeepSeek-V4-Flash" \
       org.opencontainers.image.version="${IMAGE_VERSION}" \
       org.opencontainers.image.revision="${VCS_REF}" \
       org.opencontainers.image.created="${BUILD_DATE}" \
+      io.ktransformers.upstream-revision="${KT_UPSTREAM_REF}" \
       io.ktransformers.cuda="12.8.1" \
       io.ktransformers.sm="80,86,89,90,100,120" \
       io.ktransformers.flashinfer="${FLASHINFER_VERSION}" \
