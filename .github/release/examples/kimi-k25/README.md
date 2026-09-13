@@ -21,6 +21,9 @@ Python 3.12、NVIDIA driver 580.173.02、CUDA 12.8 工具链、Torch 2.9.1。
 140 GiB **持久化磁盘**；正式 Neko 输出另算。不要将示例输出放到 `/dev/shm`，
 它占用真实 RAM，且重启会丢失。
 
+工作目录也应放在容量充足的持久化磁盘上。下面将下载、编译和 LoRA 临时缓存
+放在工作目录，避免沿用旧缓存或写满系统 `/tmp`。
+
 在新目录下载固定版本的用户资料包，不需要克隆开发仓库：
 
 ```bash
@@ -54,6 +57,13 @@ PEFT/TRL 只调整依赖元数据，不修改运行时代码。因此不要用�
 `pip install` 或最新上游 LF 替代下面的锁定安装。
 
 ```bash
+unset PYTHONPATH PYTHONHOME
+export PYTHONNOUSERSITE=1
+export HF_HOME="$PWD/cache/huggingface"
+export XDG_CACHE_HOME="$PWD/cache"
+export TRITON_CACHE_DIR="$PWD/cache/triton"
+export TMPDIR="$PWD/tmp"
+mkdir -p "$TMPDIR"
 export KIMI_PYPI_INDEX=https://pypi.org/simple
 # 国内网络可将上行替换为：https://pypi.tuna.tsinghua.edu.cn/simple
 python3.12 -m venv train-env
