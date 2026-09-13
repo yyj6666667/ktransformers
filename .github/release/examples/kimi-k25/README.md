@@ -84,8 +84,12 @@ KT 发行包共用 import namespace，不能混装在同一环境。
 
 ## 2. 下载模型并一次性准备数据
 
+下载需要能访问 Hugging Face；清华 PyPI 源不代理模型和数据。如果训练机器无法
+直连，可先在联网机器执行下面两条 `hf download`，再完整复制模型目录和
+`data-source/NekoQA-10K.json` 到训练机器。不要只复制权重而遗漏配置或 remote code。
+
 只需修改下面两个绝对路径。`KIMI_OUTPUT` 使用本轮新的持久化输出目录；
-已经完整下载相同 revision 的模型时，可以跳过模型下载命令。
+已经准备好相同 revision 的模型或数据时，可以跳过对应下载命令，仍需执行数据准备。
 
 ```bash
 export KIMI_MODEL=/absolute/path/to/Kimi-K2.5
@@ -326,6 +330,7 @@ PY
 | 现象 | 先检查 |
 | --- | --- |
 | 下载超时 | 保留 pip 下载缓存，重试相同锁文件；不要换未锁版本或关闭 SHA 校验。 |
+| `hf download` 超时 | 检查 Hugging Face 连通性；可在联网机器下载固定 revision 后完整拷贝，换 PyPI 源对此无效。 |
 | pip 依赖冲突、找不到 LF/PEFT/TRL 版本 | 是否在新环境，是否下载了配套资料包并使用 `--find-links training-tools`。 |
 | 训练 loss 异常或模板重复 | 是否先执行数据准备，且保持 `template: empty`、`packing: false`。 |
 | 加载时 rank 0 消失、Gloo connection closed | 查看 rank 0 日志、主机 OOM 记录和可用 RAM；模型重载峰值高于稳定训练，先停止并发加载、清理可恢复的重复缓存。 |
