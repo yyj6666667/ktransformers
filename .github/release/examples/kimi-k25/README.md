@@ -2,7 +2,8 @@
 
 本教程使用 `0.7.0.post4` 发布组合，完成纯文本 Neko 风格微调。冻结原始
 RAWINT4 routed experts，训练 attention LoRA 和 KT expert LoRA；不开 packing，
-不修改原模型、安装目录或模型缓存。K2.6、视觉训练和其他硬件组合不在本次验收范围。
+不修改原模型、安装目录或模型缓存。K2.6 沿用相同模型架构路径；本教程的固定
+快照和实机验收使用 K2.5，未另行验收 K2.6、视觉训练或其他硬件组合。
 
 先完成 4 步 smoke → 真续训 → 独立推理，再运行风格训练。4 步 smoke 只验证
 功能闭环，不代表模型已经学会目标风格。最新安装复验结果见
@@ -71,6 +72,11 @@ serve-env/bin/python -m pip check
 使用校验过的官方源码包正常构建，其余依赖使用 wheel。不要使用 `--no-deps`、
 关闭版本检查或复制旧 `site-packages`。上游 `transformers` / `accelerate` 与
 KT 发行包共用 import namespace，不能混装在同一环境。
+
+国内下载较慢时，可将上述安装命令的 `--index-url` 替换为
+`https://pypi.tuna.tsinghua.edu.cn/simple`（[清华 TUNA 使用说明](https://mirrors.tuna.tsinghua.edu.cn/help/pypi/)）。
+保留相同版本与 `--require-hashes`；若镜像尚未同步该版本，改回官方 PyPI，
+不要跳过校验或安装其他版本。
 
 ## 2. 下载模型并一次性准备数据
 

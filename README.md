@@ -101,6 +101,8 @@ pip install .
 
 KTransformers × LlamaFactory integration for ultra-large MoE model fine-tuning. The new Cookbook provides an easy-to-use path from hardware checks and installation to BF16/FP8/INT8 configuration, LoRA/full training, resource planning, and troubleshooting.
 
+**Kimi K2.5 / K2.6 LoRA fine-tuning** is supported with native RAWINT4 routed experts. Follow the [PyPI installation, training, resume and SGLang serving guide (中文)](./.github/release/examples/kimi-k25/README.md). End-to-end validation uses Kimi K2.5; K2.6 follows the same model-architecture path.
+
 ![LlamaFactory and KTransformers MoE fine-tuning architecture](./doc/assets/llamafactory-kt-integration-overview.png)
 
 **Key Features:**
