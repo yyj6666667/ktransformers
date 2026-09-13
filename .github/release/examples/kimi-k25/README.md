@@ -37,6 +37,8 @@ cd kimi-k25-post4
 
 后续命令均在解压后的 `kimi-k25-post4/` 下执行。资料包包含三个 YAML、数据准备
 和 adapter 转换工具、带 SHA256 的依赖锁文件，以及配套训练工具 wheel。
+在同一个 Bash 终端依次执行，只有向推理服务发送请求时需要另开终端。
+命令显式指定新环境的 Python，无需激活环境，也不要激活旧训练环境。
 
 | 来源 | 固定版本 |
 | --- | --- |
@@ -52,18 +54,20 @@ PEFT/TRL 只调整依赖元数据，不修改运行时代码。因此不要用�
 `pip install` 或最新上游 LF 替代下面的锁定安装。
 
 ```bash
+export KIMI_PYPI_INDEX=https://pypi.org/simple
+# 国内网络可将上行替换为：https://pypi.tuna.tsinghua.edu.cn/simple
 python3.12 -m venv train-env
-train-env/bin/python -m pip install --index-url https://pypi.org/simple pip==25.2
+train-env/bin/python -m pip install --index-url "$KIMI_PYPI_INDEX" pip==25.2
 train-env/bin/python -m pip install \
-  --index-url https://pypi.org/simple --timeout 120 --retries 10 --resume-retries 10 \
+  --index-url "$KIMI_PYPI_INDEX" --timeout 120 --retries 10 --resume-retries 10 \
   --only-binary=:all: --no-binary=antlr4-python3-runtime \
   --require-hashes --find-links training-tools -r locks/train.lock
 train-env/bin/python -m pip check
 
 python3.12 -m venv serve-env
-serve-env/bin/python -m pip install --index-url https://pypi.org/simple pip==25.2
+serve-env/bin/python -m pip install --index-url "$KIMI_PYPI_INDEX" pip==25.2
 serve-env/bin/python -m pip install \
-  --index-url https://pypi.org/simple --timeout 120 --retries 10 --resume-retries 10 \
+  --index-url "$KIMI_PYPI_INDEX" --timeout 120 --retries 10 --resume-retries 10 \
   --only-binary=:all: --require-hashes -r locks/serve.lock
 serve-env/bin/python -m pip check
 ```
@@ -73,14 +77,15 @@ serve-env/bin/python -m pip check
 关闭版本检查或复制旧 `site-packages`。上游 `transformers` / `accelerate` 与
 KT 发行包共用 import namespace，不能混装在同一环境。
 
-国内下载较慢时，可将上述安装命令的 `--index-url` 替换为
+国内下载较慢时，只需将 `KIMI_PYPI_INDEX` 改为
 `https://pypi.tuna.tsinghua.edu.cn/simple`（[清华 TUNA 使用说明](https://mirrors.tuna.tsinghua.edu.cn/help/pypi/)）。
 保留相同版本与 `--require-hashes`；若镜像尚未同步该版本，改回官方 PyPI，
 不要跳过校验或安装其他版本。
 
 ## 2. 下载模型并一次性准备数据
 
-设置自己的绝对路径。`KIMI_OUTPUT` 必须是本轮新建的持久化输出目录：
+只需修改下面两个绝对路径。`KIMI_OUTPUT` 使用本轮新的持久化输出目录；
+已经完整下载相同 revision 的模型时，可以跳过模型下载命令。
 
 ```bash
 export KIMI_MODEL=/absolute/path/to/Kimi-K2.5
@@ -220,11 +225,12 @@ serve-env/bin/python -m sglang.launch_server \
   2>&1 | tee "$KIMI_ADAPTER.server.log"
 ```
 
-另开终端，先确认 ready，再显式请求 adapter 名称 `kimi:neko`：
+服务会持续占用当前终端。另开终端，先确认 ready，再显式请求 adapter 名称
+`kimi:neko`；如果 `/health` 尚未成功，等服务加载完成后再请求：
 
 ```bash
-curl --fail http://127.0.0.1:30000/health
-curl --fail http://127.0.0.1:30000/v1/chat/completions \
+curl --noproxy 127.0.0.1 --fail http://127.0.0.1:30000/health
+curl --noproxy 127.0.0.1 --fail http://127.0.0.1:30000/v1/chat/completions \
   -H 'Content-Type: application/json' \
   -d '{"model":"kimi:neko","messages":[{"role":"user","content":"我今天学习有点累，请用两句话鼓励我。"}],"temperature":0,"seed":42,"max_tokens":1024,"chat_template_kwargs":{"thinking":false,"enable_thinking":false}}'
 ```
@@ -257,17 +263,59 @@ benchmark。不要为追求显示的 tokens/s 擅自打开 packing 或更改 act
 并取这个 checkpoint；改为 `max_steps: 100` 会改变学习率轨迹，不是同一实验。
 可以让一轮正常结束后再使用保留的 checkpoint-100，无需强杀训练进程。
 
-训练结束后，在第 5 节改为以下两个新路径，重新转换并启动新的推理进程：
+训练结束后，转换风格 checkpoint 到新目录：
 
 ```bash
 export KIMI_CHECKPOINT="$KIMI_OUTPUT/neko/checkpoint-100"
 export KIMI_ADAPTER="$KIMI_OUTPUT/sglang-neko"
+train-env/bin/python tools/convert_kt_to_sglang_adapter.py \
+  "$KIMI_CHECKPOINT" "$KIMI_ADAPTER" --base-model-name-or-path "$KIMI_MODEL"
 ```
+
+然后执行第 5 节的 **SGLang 服务启动命令**，使用这里刚设置的变量，不再执行
+smoke 路径的赋值命令。在第二个终端发送同样的请求，检查语气是否已经变化。
 
 用 `neko-splits/heldout.json` 中的 32 个 `prompt` 请求 `kimi:neko`，与独立 base
 进程比较；不要添加“请扮演猫娘”等 system prompt。记录原始回答，分别判断风格、
 内容相关性、回答是否完整；另外检查“17+25 只输出数字”“原样输出春暖花开”和 JSON
 格式指令。风格、loss 和指令遵循是不同指标。
+
+<details>
+<summary>批量保存 32 条独立问答</summary>
+
+在第二个终端进入同一个 `kimi-k25-post4/` 目录后执行。输出文件必须不存在，
+避免覆盖已有结果。跑独立 base 对照时，将 `model_id` 改为 `kimi`，并更换输出文件名。
+
+```bash
+serve-env/bin/python - <<'PY'
+import json
+from pathlib import Path
+import requests
+
+model_id = "kimi:neko"
+questions = json.loads(Path("neko-splits/heldout.json").read_text())
+session = requests.Session()
+session.trust_env = False
+with Path("neko-heldout-responses.jsonl").open("x", encoding="utf-8") as output:
+    for index, row in enumerate(questions, 1):
+        body = {
+            "model": model_id,
+            "messages": [{"role": "user", "content": row["prompt"]}],
+            "temperature": 0, "seed": 42, "max_tokens": 1024,
+            "chat_template_kwargs": {"thinking": False, "enable_thinking": False},
+        }
+        response = session.post("http://127.0.0.1:30000/v1/chat/completions", json=body, timeout=900)
+        response.raise_for_status()
+        output.write(json.dumps({"prompt": row["prompt"], "response": response.json()}, ensure_ascii=False) + "\n")
+        output.flush()
+        print(f"{index}/{len(questions)}", flush=True)
+PY
+```
+
+打开 `neko-heldout-responses.jsonl`，检查 `choices[0].message.content` 和
+`finish_reason`。若为 `length`，回答被长度上限截断，不能算完整回答。
+
+</details>
 
 此前 checkpoint-100 的 32 条回答均呈现明显风格，但两项严格原样输出测试失败。
 这是风格适配的实测证据，**不是通用能力、安全性或全部质量指标无损的承诺**。
