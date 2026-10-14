@@ -1,7 +1,7 @@
 """Lightweight top-level package: pip install ktransformers -> installs kt-kernel.
 
 Extras:
-  - ktransformers[sft] installs transformers-kt + accelerate-kt
+  - ktransformers[sft] installs the matching LLaMA-Factory SFT stack
   - ktransformers[sglang] installs sglang-kt
 """
 from pathlib import Path
@@ -19,8 +19,9 @@ setup(
     ],
     extras_require={
         "sft": [
-            "transformers-kt==5.6.0.post5",
-            "accelerate-kt==1.14.0.post3",
+            "transformers-kt==5.6.0.post6",
+            "accelerate-kt==1.14.0.post4",
+            "llamafactory-kt==0.9.6.dev0",
         ],
         "sglang": [
             f"sglang-kt=={_v}",
