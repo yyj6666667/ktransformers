@@ -1,0 +1,98 @@
+BF16 MoE: retain FP32 down projection until expert / TP merge
+
+Change
+The BF16 inference and no-LoRA SFT kernels read FP32 down accumulators directly
+when merging experts. TP reduction remains FP32 and the final output remains
+BF16. Gate/up conversion, fused activation, expert ordering and TP reduction
+ordering are unchanged. Active LoRA and other weight formats keep their previous
+output contract.
+
+AVX512 down accumulators store only live rows within each tile. The old layout
+reserved 32 rows even for one token, making merge reads sparse. Compaction
+changes addresses only: no extra copy, allocation or worker dispatch. AMX keeps
+its required padded tile layout. This machine has AVX512-BF16 but no AMX; AMX
+runtime performance/correctness is not claimed here.
+
+When save_for_backward is true, down outputs are copied directly to a durable
+FP32 cache for routing-weight gradients; this particular cache uses twice the
+previous bytes. Recompute, scratch-buffer overwrite and cache reuse are tested.
+The timed forward-only path does not allocate or copy that cache. Existing
+scratch allocation sizes are retained.
+
+Matched baseline
+Base commit: 44c1910a8387df87d16c8ff36c7c3714c17e9ec9
+llama.cpp submodule: a94e6ff8774b7c9f950d9545baf0ce35e8d1ed2f
+pybind11 submodule: bb05e0810b87e74709d9f4c4545f1f57a1b386f5
+Before and after are rebuilt with identical flags, Python environment and
+submodules. build-used.sh is the exact build recipe; build options and extension
+hashes are in validation-audit.json / builds.json. The unchanged old binary and
+native golden implementation remain retained alongside the new module overlay.
+
+Operator benchmark
+AMD EPYC 9355; two NUMA partitions with 24 worker threads each; TP2.
+Synthetic single MoE layer: 256 experts, top-8, hidden 2048, intermediate 512,
+BF16 weights/inputs, seed 42. Tokens 1/4 simulate decode, 128/512 simulate prefill.
+Both SFT SkipLoRA and inference operator entry points are measured. Each family
+uses before/after/after/before process order; 20 warmups and 60 samples per case
+per process. Reported medians pool 120 samples per build; per-run median ranges
+and all raw samples are included. These are descriptive measurements, not
+statistical confidence bounds.
+
+The timed region includes task construction, CPUInfer dispatch, all TP worker
+computation, expert and TP merging, final BF16 conversion and synchronization.
+It excludes model/weight loading, input copies, GPU execution and hidden-state
+hooks. Profiling is disabled during these timings. Weights and every input are
+hashed to verify equality between builds. This is not full-model throughput.
+
+For an installed BF16-capable kt_kernel build, from the repository root:
+  python kt-kernel/benchmarks/bench_bf16_merge.py --family sft --output sft.json
+  python kt-kernel/benchmarks/bench_bf16_merge.py --family inference --output inference.json
+  python -m pytest -q kt-kernel/test/per_commit/test_bf16_fp32_merge.py
+Run the same commands against the original and patched builds in separate
+processes. Select the binary with PYTHONPATH overlays as in run-used.py.
+
+Actual model accuracy probe
+Qwen3.5-35B-A3B BF16, LoRA disabled on both sides, original HF eager experts as
+golden. The surrounding model uses the same HF implementation and four-GPU
+FSDP2 configuration; KT replaces the CPU MoE experts. Attention is eager and
+linear attention uses the original torch fallback on both sides. This experiment
+does not compare SGLang serving kernels.
+
+Eight frozen wbw cases (first four eligible train and validation rows) use the
+same original golden-generated 32-token prefix per case. The metric is
+mean(abs(KT - golden)) at each complete decoder-layer output including residual.
+The 256 positions comprise eight last-prompt prefill positions and 248 decode
+positions. Prefill figures do not average over every prompt position. Seed 42,
+deterministic algorithms, TF32 disabled, reduced-precision matmul reduction
+disabled. Before/after/golden replay consumes identical tokens; generation drift
+cannot contaminate later-layer comparisons.
+
+This patch removes one rounding boundary. The golden has other BF16 boundaries
+and GPU kernels; removing this one does not establish arithmetic equivalence.
+No complete-answer accuracy, reward score or RL optimizer-step result is claimed.
+
+Retained execution environment
+Connect: ssh -J sap1 qj5090
+Fixture root: /dev/shm/yyj-qwen35-35b-wbw-20261019
+Experiment: <fixture root>/fp32-down-merge
+Original golden Python: <fixture root>/native/venv/bin/python
+KT Python: <fixture root>/actor-kt/venv/bin/python
+Binary overlays: <experiment>/overlays/before and <experiment>/overlays/after-v3
+Final raw output: <experiment>/compact-final
+Earlier direct padded FP32 merge: <experiment>/replay-after
+Original golden records: <fixture root>/outputs/native-step1-001/generated_cached
+Reference token fixtures: <fixture root>/outputs/native-step1-001/generated-cases.json
+Original retained KT records: <fixture root>/outputs/kt-step1-002/reference_cached
+
+Set LD_LIBRARY_PATH as in build-used.sh, KT_KERNEL_CPU_VARIANT=avx512_bf16,
+KT_MERGE_FIXTURE_ROOT to the fixture root, and PYTHONPATH to the selected overlay.
+For model replay also set PYTHONHASHSEED=42, CUBLAS_WORKSPACE_CONFIG=:4096:8,
+CUDA_VISIBLE_DEVICES=0,1,2,3 and use:
+  python -m torch.distributed.run --standalone --nproc_per_node=4 \
+    kt-kernel/benchmarks/replay_bf16_merge.py --backend kt \
+    --reference <reference-token-fixtures> --output <fresh-replay-directory>
+Use a fresh output directory. run-used.py records the exact actual command order
+and environment. Model weights, original data, Python environments, raw tensor
+captures and binaries stay in the retained RAM environment; compact hashes,
+measurements, scripts and validation logs are published here. RAM retention ends
+if that machine reboots or the tmpfs is cleared.

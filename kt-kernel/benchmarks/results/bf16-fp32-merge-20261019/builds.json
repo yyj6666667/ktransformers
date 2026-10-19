@@ -1,0 +1,23 @@
+{
+  "before": {
+    "extension": "/dev/shm/yyj-qwen35-35b-wbw-20261019/fp32-down-merge/overlays/before/kt_kernel/_kt_kernel_ext_avx512_bf16.cpython-312-x86_64-linux-gnu.so",
+    "sha256": "e479f011c87d98149468d8136e47d6f06e7abf3875fbed263136095184f292ce"
+  },
+  "after": {
+    "extension": "/dev/shm/yyj-qwen35-35b-wbw-20261019/fp32-down-merge/overlays/after/kt_kernel/_kt_kernel_ext_avx512_bf16.cpython-312-x86_64-linux-gnu.so",
+    "sha256": "eca44488bfbdb6601167acb8abdb47e9cd8186d527c732ac2267fc69e6aa62a1"
+  },
+  "retained_original_sha256": "49928b53aeda0be58df51e3d235433d7c888fb6a6b116170da0c53a38083fb4c",
+  "after-v2": {
+    "extension": "/dev/shm/yyj-qwen35-35b-wbw-20261019/fp32-down-merge/overlays/after-v2/kt_kernel/_kt_kernel_ext_avx512_bf16.cpython-312-x86_64-linux-gnu.so",
+    "sha256": "9ad385f7a5dcd03cbbdb31b127f59750c43191ad8ee66ba020a3ae6baf4f7b0e"
+  },
+  "bf16-parallel-control": {
+    "extension": "/dev/shm/yyj-qwen35-35b-wbw-20261019/fp32-down-merge/overlays/bf16-parallel-control/kt_kernel/_kt_kernel_ext_avx512_bf16.cpython-312-x86_64-linux-gnu.so",
+    "sha256": "3921572a9db1f7dfca54fa34c9da36ba0af98d4b619b0cc614be37eaf560ff7f"
+  },
+  "after-v3": {
+    "extension": "/dev/shm/yyj-qwen35-35b-wbw-20261019/fp32-down-merge/overlays/after-v3/kt_kernel/_kt_kernel_ext_avx512_bf16.cpython-312-x86_64-linux-gnu.so",
+    "sha256": "4107ab10c98894e230bb72bc6eaa8c3c1d3f79ddbc1274a43afd7721618deba6"
+  }
+}

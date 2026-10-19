@@ -38,6 +38,8 @@
 template <class T, class Derived>
 class AMX_MOE_BASE {
  public:
+  // Other weight formats retain their existing output contract.
+  static constexpr bool kFP32DownMerge = false;
   int tp_part_idx = 0;
 
   ggml_bf16_t* m_local_input_ = nullptr;
@@ -78,6 +80,19 @@ class AMX_MOE_BASE {
   using input_t = ggml_bf16_t;
   using output_t = float;
   static constexpr double ELEMENT_SIZE = T::ELEMENT_SIZE;
+
+  template <bool FP32Down>
+  inline void load_down_output(int expert, int row, int column, __m512& lo, __m512& hi) const {
+    if constexpr (FP32Down) {
+      static_assert(T::N_STEP == 32);
+      const float* src = down_bc_[expert]->row_ptr(m_local_num_[expert], row, column);
+      lo = _mm512_loadu_ps(src);
+      hi = _mm512_loadu_ps(src + 16);
+    } else {
+      avx512_32xbf16_to_32xfp32(
+          (__m512i*)(m_local_down_output_ptr_[expert] + (size_t)row * config_.hidden_size + column), &lo, &hi);
+    }
+  }
 
   AMX_MOE_BASE(GeneralMOEConfig config, int tp_part_idx_) : tp_part_idx(tp_part_idx_), config_(config) {
     init();
@@ -130,6 +145,9 @@ class AMX_MOE_BASE {
       up_bc_.push_back(make_buffer_c(config_.max_len, config_.intermediate_size, nullptr));
       down_ba_.push_back(make_buffer_a(config_.max_len, config_.intermediate_size, nullptr));
       down_bc_.push_back(make_buffer_c(config_.max_len, config_.hidden_size, nullptr));
+      if constexpr (Derived::kFP32DownMerge && !amx::AMX_AVAILABLE) {
+        down_bc_.back()->compact_rows = true;
+      }
 
       void* gate_bb_ptr =
           std::aligned_alloc(64, buffer_b_required_size(config_.intermediate_size, config_.hidden_size));
@@ -398,7 +416,9 @@ class AMX_MOE_BASE {
           int expert_idx = m_expert_id_map_[task_id / nth];
           int ith = task_id % nth;
           derived()->do_down_gemm(expert_idx, ith, nth, qlen);
-          down_bc_[expert_idx]->to_mat(m_local_num_[expert_idx], m_local_down_output_ptr_[expert_idx], ith, nth);
+          if constexpr (!Derived::kFP32DownMerge) {
+            down_bc_[expert_idx]->to_mat(m_local_num_[expert_idx], m_local_down_output_ptr_[expert_idx], ith, nth);
+          }
         },
         nullptr);
 
@@ -422,9 +442,8 @@ class AMX_MOE_BASE {
               }
               __m512 weight = _mm512_set1_ps(weights[i * k + j]);
               __m512 down_output0, down_output1;
-              avx512_32xbf16_to_32xfp32((__m512i*)(m_local_down_output_ptr_[expert_ids[i * k + j]] +
-                                                   m_local_pos_[i][j] * config_.hidden_size + e),
-                                        &down_output0, &down_output1);
+              load_down_output<Derived::kFP32DownMerge>(expert_ids[i * k + j], m_local_pos_[i][j], e,
+                                                       down_output0, down_output1);
               x0 = _mm512_fmadd_ps(down_output0, weight, x0);
               x1 = _mm512_fmadd_ps(down_output1, weight, x1);
             }
@@ -605,7 +624,9 @@ class AMX_MOE_BASE {
           int expert_idx = m_expert_id_map_[task_id / nth];
           int ith = task_id % nth;
           derived()->do_down_gemm(expert_idx, ith, nth, qlen);
-          down_bc_[expert_idx]->to_mat(qlen, m_local_down_output_ptr_[expert_idx], ith, nth);
+          if constexpr (!Derived::kFP32DownMerge) {
+            down_bc_[expert_idx]->to_mat(qlen, m_local_down_output_ptr_[expert_idx], ith, nth);
+          }
         },
         nullptr);
 
@@ -626,9 +647,7 @@ class AMX_MOE_BASE {
         }
         __m512 weight = _mm512_set1_ps(weights[j]);
         __m512 down_output0, down_output1;
-        avx512_32xbf16_to_32xfp32(
-            (__m512i*)(m_local_down_output_ptr_[expert_ids[j]] + m_local_pos_[0][j] * config_.hidden_size + e),
-            &down_output0, &down_output1);
+        load_down_output<Derived::kFP32DownMerge>(expert_ids[j], m_local_pos_[0][j], e, down_output0, down_output1);
         x0 = _mm512_fmadd_ps(down_output0, weight, x0);
         x1 = _mm512_fmadd_ps(down_output1, weight, x1);
       }

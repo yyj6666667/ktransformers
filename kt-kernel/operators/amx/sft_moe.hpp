@@ -286,6 +286,7 @@ struct ForwardCache {
   ggml_bf16_t* up_output_cache = nullptr;     // [tokens_total, intermediate_size]
   ggml_bf16_t* intermediate_cache = nullptr;  // [tokens_total, intermediate_size] (after activation)
   ggml_bf16_t* down_output_cache = nullptr;   // [tokens_total, hidden_size] (for grad_weights)
+  float* down_output_fp32_cache = nullptr;   // Same shape, BF16 backend without LoRA; mutually exclusive above.
   float* down_lora_u_cache = nullptr;         // [tokens_total, lora_rank] FP32, reused by backward grad_B
 
   // Routing information
@@ -398,6 +399,25 @@ class AMX_SFT_MOE_TP : public BaseMOE<T> {
   static constexpr bool kSupportsAuthoritativeLoraGrads =
       !SkipLoRA &&
       (std::is_same_v<T, amx::GemmKernel224BF16> || kIsInt8Backend || kIsFP8Backend || kIsMXFP4Backend);
+
+  bool uses_fp32_down_merge() const {
+    return kSupportsDirectBf16Reload && (SkipLoRA || lora_rank_ == 0);
+  }
+
+  template <bool FP32Down>
+  void check_down_output_for_nan(int expert, const char* label) {
+    if constexpr (FP32Down) {
+      for (int row = 0; row < this->m_local_num_[expert]; ++row) {
+        for (int column = 0; column < this->config_.hidden_size; column += T::N_STEP) {
+          check_fp32_buffer_for_nan(this->down_bc_[expert]->row_ptr(this->m_local_num_[expert], row, column),
+                                    T::N_STEP, label);
+        }
+      }
+    } else {
+      check_bf16_buffer_for_nan(this->m_local_down_output_ptr_[expert],
+                                this->m_local_num_[expert] * this->config_.hidden_size, label);
+    }
+  }
 
  protected:
   using Base = BaseMOE<T>;
@@ -780,6 +800,12 @@ class AMX_SFT_MOE_TP : public BaseMOE<T> {
     lora_dropout_ = config.lora_dropout;
     max_cache_depth_ = config.max_cache_depth;
 
+    if constexpr (kSupportsDirectBf16Reload) {
+      for (auto& bc : down_bc_) {
+        bc->compact_rows = !amx::AMX_AVAILABLE && uses_fp32_down_merge();
+      }
+    }
+
     // Get LoRA weight pointers
     gate_lora_a_ = (ggml_bf16_t*)config.gate_lora_a;
     gate_lora_b_ = (ggml_bf16_t*)config.gate_lora_b;
@@ -912,7 +938,13 @@ class AMX_SFT_MOE_TP : public BaseMOE<T> {
         cache_stack_[i].up_output_cache = (ggml_bf16_t*)cache_up_output_pool_ + si * ml * k_tok * I;
         cache_stack_[i].intermediate_cache = (ggml_bf16_t*)cache_intermediate_pool_ + si * ml * k_tok * I;
         cache_stack_[i].down_lora_u_cache = (float*)cache_down_lora_u_pool_ + si * ml * k_tok * lora_rank_;
-        cache_stack_[i].down_output_cache = (ggml_bf16_t*)cache_down_output_pool_ + si * ml * k_tok * H;
+        if (uses_fp32_down_merge()) {
+          cache_stack_[i].down_output_fp32_cache = (float*)cache_down_output_pool_ + si * ml * k_tok * H;
+          cache_stack_[i].down_output_cache = nullptr;
+        } else {
+          cache_stack_[i].down_output_cache = (ggml_bf16_t*)cache_down_output_pool_ + si * ml * k_tok * H;
+          cache_stack_[i].down_output_fp32_cache = nullptr;
+        }
       }
     } else {
       cache_input_pool_ = nullptr;
@@ -1096,6 +1128,19 @@ class AMX_SFT_MOE_TP : public BaseMOE<T> {
    */
   void forward_sft(int qlen, int k, const int64_t* expert_ids, const float* weights, const void* input, void* output,
                    bool save_for_backward) {
+    if constexpr (kSupportsDirectBf16Reload) {
+      if (uses_fp32_down_merge()) {
+        forward_sft_impl<true>(qlen, k, expert_ids, weights, input, output, save_for_backward);
+        return;
+      }
+    }
+    forward_sft_impl<false>(qlen, k, expert_ids, weights, input, output, save_for_backward);
+  }
+
+  // Dispatch once per operator, keeping dtype checks out of the merge loop.
+  template <bool FP32Down>
+  void forward_sft_impl(int qlen, int k, const int64_t* expert_ids, const float* weights, const void* input,
+                        void* output, bool save_for_backward) {
     SFTProfileScope total_scope(profiler_, SFTProfileStage::FwdTotal);
     SFTProfileScope checkpoint_scope(profiler_, save_for_backward && config_.share_cache_pool
                                                     ? SFTProfileStage::FwdRecomputeTotal
@@ -1525,11 +1570,22 @@ class AMX_SFT_MOE_TP : public BaseMOE<T> {
     nth = T::recommended_nth(config_.hidden_size);
     pool->do_work_stealing_job(
         nth * activated_expert, [](int _) { T::config(); },
-        [this, nth, qlen](int task_id) {
+        [this, nth, qlen, save_for_backward](int task_id) {
           int expert_idx = m_expert_id_map_[task_id / nth];
           int ith = task_id % nth;
           this->do_down_gemm(expert_idx, ith, nth, qlen);
-          down_bc_[expert_idx]->to_mat(m_local_num_[expert_idx], m_local_down_output_ptr_[expert_idx], ith, nth);
+          if constexpr (FP32Down) {
+            // Keep the accumulator for the merge. Only training needs a durable
+            // copy because the shared GEMM workspace is reused by later layers.
+            if (save_for_backward) {
+              auto& cache = cache_stack_[cache_stack_top_ - 1];
+              down_bc_[expert_idx]->to_mat_fp32(
+                  m_local_num_[expert_idx],
+                  cache.down_output_fp32_cache + cache_offsets_[task_id / nth] * config_.hidden_size, ith, nth);
+            }
+          } else {
+            down_bc_[expert_idx]->to_mat(m_local_num_[expert_idx], m_local_down_output_ptr_[expert_idx], ith, nth);
+          }
         },
         nullptr);
     profiler_.record(SFTProfileStage::FwdDownBase, stage_start);
@@ -1542,8 +1598,7 @@ class AMX_SFT_MOE_TP : public BaseMOE<T> {
           char label[128];
           snprintf(label, sizeof(label), "[FWD L%d] Step8 down_base_output expert=%d tokens=%d", config_.layer_idx,
                    expert_idx, m_local_num_[expert_idx]);
-          check_bf16_buffer_for_nan(m_local_down_output_ptr_[expert_idx],
-                                    m_local_num_[expert_idx] * config_.hidden_size, label);
+          check_down_output_for_nan<FP32Down>(expert_idx, label);
         }
       }
     }
@@ -1564,15 +1619,14 @@ class AMX_SFT_MOE_TP : public BaseMOE<T> {
           char label[128];
           snprintf(label, sizeof(label), "[FWD L%d] Step8.5 down_after_lora expert=%d tokens=%d", config_.layer_idx,
                    expert_idx, m_local_num_[expert_idx]);
-          check_bf16_buffer_for_nan(m_local_down_output_ptr_[expert_idx],
-                                    m_local_num_[expert_idx] * config_.hidden_size, label);
+          check_down_output_for_nan<FP32Down>(expert_idx, label);
         }
       }
     }
 
     // Save down_output for grad_weights computation
     stage_start = profiler_.start();
-    if (save_for_backward) {
+    if (save_for_backward && !FP32Down) {
       ForwardCache& cache = cache_stack_[cache_stack_top_ - 1];  // Get the cache we just pushed
       if (direct_cache == nullptr) save_down_output_to_cache(cache, activated_expert);
     }
@@ -1592,9 +1646,14 @@ class AMX_SFT_MOE_TP : public BaseMOE<T> {
               }
               __m512 weight = _mm512_set1_ps(weights[i * k + j]);
               __m512 down_output0, down_output1;
-              avx512_32xbf16_to_32xfp32((__m512i*)(m_local_down_output_ptr_[expert_ids[i * k + j]] +
-                                                   m_local_pos_[i][j] * config_.hidden_size + e),
-                                        &down_output0, &down_output1);
+              if constexpr (FP32Down) {
+                this->template load_down_output<true>(expert_ids[i * k + j], m_local_pos_[i][j], e,
+                                                      down_output0, down_output1);
+              } else {
+                avx512_32xbf16_to_32xfp32((__m512i*)(m_local_down_output_ptr_[expert_ids[i * k + j]] +
+                                                     m_local_pos_[i][j] * config_.hidden_size + e),
+                                          &down_output0, &down_output1);
+              }
               x0 = _mm512_fmadd_ps(down_output0, weight, x0);
               x1 = _mm512_fmadd_ps(down_output1, weight, x1);
             }
@@ -1717,7 +1776,12 @@ class AMX_SFT_MOE_TP : public BaseMOE<T> {
       check_cache_bf16("gate_output_cache", cache.gate_output_cache, total_tokens * config_.intermediate_size);
       check_cache_bf16("up_output_cache", cache.up_output_cache, total_tokens * config_.intermediate_size);
       check_cache_bf16("intermediate_cache", cache.intermediate_cache, total_tokens * config_.intermediate_size);
-      check_cache_bf16("down_output_cache", cache.down_output_cache, total_tokens * config_.hidden_size);
+      if (cache.down_output_fp32_cache != nullptr) {
+        check_fp32_buffer_for_nan(cache.down_output_fp32_cache, total_tokens * config_.hidden_size,
+                                  "down_output_fp32_cache");
+      } else {
+        check_cache_bf16("down_output_cache", cache.down_output_cache, total_tokens * config_.hidden_size);
+      }
     }
 
     // ★ Allocate backward-phase buffers ★
@@ -2008,7 +2072,6 @@ class AMX_SFT_MOE_TP : public BaseMOE<T> {
 
           // dot(grad_output[token_idx], down_output_cache[down_offset])
           const ggml_bf16_t* grad_out_ptr = grad_out + token_idx * config_.hidden_size;
-          const ggml_bf16_t* down_out_ptr = cache.down_output_cache + down_offset * config_.hidden_size;
 
           __m512 acc0 = _mm512_setzero_ps();
           __m512 acc1 = _mm512_setzero_ps();
@@ -2016,7 +2079,14 @@ class AMX_SFT_MOE_TP : public BaseMOE<T> {
           for (int h = 0; h + 32 <= config_.hidden_size; h += 32) {
             __m512 g0, g1, d0, d1;
             avx512_32xbf16_to_32xfp32((__m512i*)(grad_out_ptr + h), &g0, &g1);
-            avx512_32xbf16_to_32xfp32((__m512i*)(down_out_ptr + h), &d0, &d1);
+            if (cache.down_output_fp32_cache != nullptr) {
+              const float* down_out = cache.down_output_fp32_cache + down_offset * config_.hidden_size + h;
+              d0 = _mm512_loadu_ps(down_out);
+              d1 = _mm512_loadu_ps(down_out + 16);
+            } else {
+              const ggml_bf16_t* down_out = cache.down_output_cache + down_offset * config_.hidden_size + h;
+              avx512_32xbf16_to_32xfp32((__m512i*)down_out, &d0, &d1);
+            }
             acc0 = _mm512_fmadd_ps(g0, d0, acc0);
             acc1 = _mm512_fmadd_ps(g1, d1, acc1);
           }
@@ -3474,7 +3544,8 @@ class AMX_SFT_MOE_TP : public BaseMOE<T> {
     cache_slot_bytes_input_ = ml * H * sizeof(ggml_bf16_t);
     cache_slot_bytes_intermediate_ = ml * k_tok * I * sizeof(ggml_bf16_t);
     cache_slot_bytes_down_lora_u_ = ml * k_tok * lora_rank_ * sizeof(float);
-    cache_down_output_bytes_ = (size_t)max_cache_depth_ * ml * k_tok * H * sizeof(ggml_bf16_t);
+    cache_down_output_bytes_ = (size_t)max_cache_depth_ * ml * k_tok * H *
+                               (uses_fp32_down_merge() ? sizeof(float) : sizeof(ggml_bf16_t));
 
     grad_buffer_bytes_ = ml * k_tok * I * sizeof(ggml_bf16_t);
     if constexpr (std::is_same_v<T, amx::GemmKernel224BF16>) {
@@ -3742,6 +3813,7 @@ class AMX_SFT_MOE_TP : public BaseMOE<T> {
       cache_stack_[i].up_output_cache = nullptr;
       cache_stack_[i].intermediate_cache = nullptr;
       cache_stack_[i].down_output_cache = nullptr;
+      cache_stack_[i].down_output_fp32_cache = nullptr;
       cache_stack_[i].m_local_num_cache.resize(config_.expert_num);
       cache_stack_[i].m_local_pos_cache.resize(config_.max_len);
       for (int j = 0; j < config_.max_len; j++) {
@@ -4854,7 +4926,9 @@ class AMX_SFT_MOE_TP : public BaseMOE<T> {
       const size_t offset = cache_offsets_[i];
       m_local_gate_output_ptr_[expert_idx] = cache.gate_output_cache + offset * config_.intermediate_size;
       m_local_up_output_ptr_[expert_idx] = cache.up_output_cache + offset * config_.intermediate_size;
-      m_local_down_output_ptr_[expert_idx] = cache.down_output_cache + offset * config_.hidden_size;
+      if (cache.down_output_cache != nullptr) {
+        m_local_down_output_ptr_[expert_idx] = cache.down_output_cache + offset * config_.hidden_size;
+      }
       direct_cache_intermediate_ptrs_[expert_idx] = cache.intermediate_cache + offset * config_.intermediate_size;
     }
   }

@@ -579,6 +579,9 @@ template <typename K>
 struct BufferCFP32Impl {
   float* c;
   int max_m, n;
+  // AVX512 writes only live rows. AMX tile stores require the padded layout.
+  // Compact rows avoid sparse reads when an expert receives few tokens.
+  bool compact_rows = false;
   static constexpr int M_STEP = K::M_STEP;
   static constexpr int N_STEP = K::N_STEP;
   static constexpr int N_BLOCK = K::N_BLOCK;
@@ -604,9 +607,45 @@ struct BufferCFP32Impl {
 
   void set_data(void* new_ptr) { c = reinterpret_cast<float*>(new_ptr); }
 
+  // A contiguous N_STEP-wide row segment in the tiled accumulator. The caller
+  // supplies a tile-aligned column; no materialization or precision conversion.
+  const float* row_ptr(int m, int row, int column) const {
+    assert(row >= 0 && row < m && column >= 0 && column < n && column % N_STEP == 0);
+    const int stored_m = compact_rows ? m : (m + M_STEP - 1) / M_STEP * M_STEP;
+    const int row_begin = row / M_STEP * M_STEP;
+    const int tile_rows = compact_rows ? std::min(M_STEP, m - row_begin) : M_STEP;
+    const int n_block_begin = column / N_BLOCK * N_BLOCK;
+    const int n_block_size = std::min(N_BLOCK, n - n_block_begin);
+    return c + (size_t)stored_m * n_block_begin + (size_t)row_begin * n_block_size +
+           (size_t)(column - n_block_begin) * tile_rows + (row % M_STEP) * N_STEP;
+  }
+
+  // Training alone needs a durable row-major copy for the router gradient.
+  // Inference consumes row_ptr() directly and never calls this copy.
+  void to_mat_fp32(int m, float* dst, int ith, int nth) const {
+    assert(m <= max_m);
+    auto [n_start, n_end] = K::split_range_n(n, ith, nth);
+    for (int row = 0; row < m; ++row) {
+      for (int column = n_start; column < n_end; column += N_STEP) {
+        std::memcpy(dst + (size_t)row * n + column, row_ptr(m, row, column), N_STEP * sizeof(float));
+      }
+    }
+  }
+
   void to_mat(int m, ggml_bf16_t* dst, int ith, int nth) {
     assert(m <= max_m);
     auto [n_start, n_end] = K::split_range_n(n, ith, nth);
+    if (compact_rows) {
+      for (int row = 0; row < m; ++row) {
+        for (int column = n_start; column < n_end; column += N_STEP) {
+          const float* src = row_ptr(m, row, column);
+          __m512 lo = _mm512_loadu_ps(src);
+          __m512 hi = _mm512_loadu_ps(src + 16);
+          avx512_32xfp32_to_32xbf16(&lo, &hi, (__m512i*)(dst + (size_t)row * n + column));
+        }
+      }
+      return;
+    }
     int m_block_size = (m + M_STEP - 1) / M_STEP * M_STEP;
     int n_block_begin = n_start;
     int n_block_size = n_end - n_block_begin;
@@ -624,11 +663,12 @@ struct BufferCFP32Impl {
   }
 
   float* get_submat(int m, int n, int m_begin, int n_begin) {
-    int m_block_size = (m + M_STEP - 1) / M_STEP * M_STEP;
+    const int stored_m = compact_rows ? m : (m + M_STEP - 1) / M_STEP * M_STEP;
+    const int tile_rows = compact_rows ? std::min(M_STEP, m - m_begin) : M_STEP;
     int n_block_begin = n_begin / N_BLOCK * N_BLOCK;
     int n_block_size = std::min(N_BLOCK, n - n_block_begin);
     n_begin -= n_block_begin;
-    return c + m_block_size * n_block_begin + m_begin * n_block_size + n_begin * M_STEP;
+    return c + (size_t)stored_m * n_block_begin + (size_t)m_begin * n_block_size + (size_t)n_begin * tile_rows;
   }
 };
 

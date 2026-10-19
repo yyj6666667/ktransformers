@@ -1,0 +1,14 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.13, pytest-8.4.2, pluggy-1.6.0
+rootdir: /dev/shm/yyj-qwen35-35b-wbw-20261019/fp32-down-merge/source-after-v3/kt-kernel
+configfile: pytest.ini
+plugins: anyio-4.15.1
+collected 24 items
+
+../../dev/shm/yyj-qwen35-35b-wbw-20261019/fp32-down-merge/source-after-v3/kt-kernel/test/per_commit/test_bf16_fp32_merge.py . [  4%]
+.......................                                                  [100%]
+
+============================== 24 passed in 4.07s ==============================
+_cache_pool false
+Creating TP_MOE_SFT layer 0
+CPUInfer[0x556dcb11f600]: Goodbye

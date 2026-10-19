@@ -45,6 +45,7 @@ class AMX_BF16_MOE_TP : public AMX_MOE_BASE<T, AMX_BF16_MOE_TP<T>> {
   using Base::up_bc_;
 
  public:
+  static constexpr bool kFP32DownMerge = true;
   using typename Base::input_t;
   using typename Base::output_t;
 
