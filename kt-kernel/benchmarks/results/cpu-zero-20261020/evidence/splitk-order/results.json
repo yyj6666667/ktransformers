@@ -1,0 +1,142 @@
+[
+  {
+    "m": 32,
+    "chunk": 128,
+    "parts": 16,
+    "different": 8,
+    "elements": 32768
+  },
+  {
+    "m": 32,
+    "chunk": 256,
+    "parts": 8,
+    "different": 8,
+    "elements": 32768
+  },
+  {
+    "m": 32,
+    "chunk": 384,
+    "parts": 6,
+    "different": 9,
+    "elements": 32768
+  },
+  {
+    "m": 32,
+    "chunk": 416,
+    "parts": 5,
+    "different": 6,
+    "elements": 32768
+  },
+  {
+    "m": 32,
+    "chunk": 448,
+    "parts": 5,
+    "different": 0,
+    "elements": 32768
+  },
+  {
+    "m": 32,
+    "chunk": 512,
+    "parts": 4,
+    "different": 9,
+    "elements": 32768
+  },
+  {
+    "m": 32,
+    "chunk": 640,
+    "parts": 4,
+    "different": 11,
+    "elements": 32768
+  },
+  {
+    "m": 32,
+    "chunk": 768,
+    "parts": 3,
+    "different": 14,
+    "elements": 32768
+  },
+  {
+    "m": 32,
+    "chunk": 1024,
+    "parts": 2,
+    "different": 20,
+    "elements": 32768
+  },
+  {
+    "m": 32,
+    "chunk": 2048,
+    "parts": 1,
+    "different": 31,
+    "elements": 32768
+  },
+  {
+    "m": 64,
+    "chunk": 128,
+    "parts": 16,
+    "different": 22,
+    "elements": 65536
+  },
+  {
+    "m": 64,
+    "chunk": 256,
+    "parts": 8,
+    "different": 29,
+    "elements": 65536
+  },
+  {
+    "m": 64,
+    "chunk": 384,
+    "parts": 6,
+    "different": 21,
+    "elements": 65536
+  },
+  {
+    "m": 64,
+    "chunk": 416,
+    "parts": 5,
+    "different": 20,
+    "elements": 65536
+  },
+  {
+    "m": 64,
+    "chunk": 448,
+    "parts": 5,
+    "different": 21,
+    "elements": 65536
+  },
+  {
+    "m": 64,
+    "chunk": 512,
+    "parts": 4,
+    "different": 24,
+    "elements": 65536
+  },
+  {
+    "m": 64,
+    "chunk": 640,
+    "parts": 4,
+    "different": 26,
+    "elements": 65536
+  },
+  {
+    "m": 64,
+    "chunk": 768,
+    "parts": 3,
+    "different": 27,
+    "elements": 65536
+  },
+  {
+    "m": 64,
+    "chunk": 1024,
+    "parts": 2,
+    "different": 0,
+    "elements": 65536
+  },
+  {
+    "m": 64,
+    "chunk": 2048,
+    "parts": 1,
+    "different": 55,
+    "elements": 65536
+  }
+]

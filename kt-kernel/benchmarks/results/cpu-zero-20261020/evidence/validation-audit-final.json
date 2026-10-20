@@ -1,0 +1,100 @@
+{
+  "protected_runtime_hashes_unchanged": {
+    "native/venv/lib/python3.12/site-packages/transformers/models/qwen3_5_moe/modeling_qwen3_5_moe.py": "6f86e1c9856166c50faff7158a4c4e7bba6a7eb5f76591e47ee1a81e5f9dec67",
+    "actor-kt/venv/lib/python3.12/site-packages/transformers/models/qwen3_5_moe/modeling_qwen3_5_moe.py": "6f86e1c9856166c50faff7158a4c4e7bba6a7eb5f76591e47ee1a81e5f9dec67",
+    "actor-kt/venv/lib/python3.12/site-packages/kt_kernel/_kt_kernel_ext_avx512_bf16.cpython-312-x86_64-linux-gnu.so": "49928b53aeda0be58df51e3d235433d7c888fb6a6b116170da0c53a38083fb4c"
+  },
+  "golden_raw_record_hashes_unchanged": [
+    {
+      "file": "train-0000.cached.r0.pt",
+      "sha256": "f15e741abe50b24eb8368019d715601d243fc0e1b5548edc2c2e35054253f7ab"
+    },
+    {
+      "file": "train-0001.cached.r0.pt",
+      "sha256": "4db050836ef5059f0b94a1191dfc0871192e5f55f61f39c81fee843c48719396"
+    },
+    {
+      "file": "train-0002.cached.r0.pt",
+      "sha256": "784370c747293105d2b71d2b0f0cd69d97d19753f0789775d7c8eb0696fe0003"
+    },
+    {
+      "file": "train-0003.cached.r0.pt",
+      "sha256": "a36790d5815462ee5088c3c36eb47cd680682898383e60199f0a5b3908f121db"
+    },
+    {
+      "file": "validation-0000.cached.r0.pt",
+      "sha256": "779af53e90c03939e9a22eb56ce7a1ed06b01ab784fc43c42579adf6dbe283da"
+    },
+    {
+      "file": "validation-0001.cached.r0.pt",
+      "sha256": "56e810c6835e408390bd52071ec6f29d85daa909befa88ce57221598f7b698f7"
+    },
+    {
+      "file": "validation-0002.cached.r0.pt",
+      "sha256": "be08ca7a97e10553b917aabdd5beca2bbc815e1769317c1cfe52094f39e79061"
+    },
+    {
+      "file": "validation-0003.cached.r0.pt",
+      "sha256": "b7517458c758ed9abc76f50bcdc9c94a1d85cbaca81bd5ba2a0bed8e6ea18dab"
+    }
+  ],
+  "data_cases_sha256": "2ab3b8cc5effdab1dba724ba4ec895da1eeafb3a8c5b46ded35b794a3e225614",
+  "generated_prefixes_sha256": "c85f9fefb252125ef5326ea7ea5170b44d69036c27b23046481dc9f7a5f90f12",
+  "model_manifest_sha256": "dab7f00ffb2af71a98d2a740ce8e640255ed8b7db6557ef371a03c1c210d5d0c",
+  "candidate_raw_records": [
+    {
+      "file": "/dev/shm/yyj-qwen35-35b-wbw-20261019/fp32-down-merge/cpu-zero-20261020/full-kt-v5-32/12_kt_sm120/train-0000.cached.r0.pt",
+      "bytes": 61891155,
+      "sha256": "ca898ac244d63fd5c4ce81089428987026bd214f53decd8a9974db8af4fff1ad"
+    },
+    {
+      "file": "/dev/shm/yyj-qwen35-35b-wbw-20261019/fp32-down-merge/cpu-zero-20261020/full-kt-v5-32/12_kt_sm120/train-0001.cached.r0.pt",
+      "bytes": 61891347,
+      "sha256": "27ddc8a76be5024318c7eb583fa64f792fa873b776ca807702bf992664250461"
+    },
+    {
+      "file": "/dev/shm/yyj-qwen35-35b-wbw-20261019/fp32-down-merge/cpu-zero-20261020/full-kt-v5-32/12_kt_sm120/train-0002.cached.r0.pt",
+      "bytes": 61891027,
+      "sha256": "31aa74388b93bb072181496d22a6505dac42502cd3b60c2ee6218c802851b602"
+    },
+    {
+      "file": "/dev/shm/yyj-qwen35-35b-wbw-20261019/fp32-down-merge/cpu-zero-20261020/full-kt-v5-32/12_kt_sm120/train-0003.cached.r0.pt",
+      "bytes": 61891219,
+      "sha256": "7620d4a43e32af2a1a7f67f1a42b458660bc4c8ca34e8c334c2088f54ce68d5a"
+    },
+    {
+      "file": "/dev/shm/yyj-qwen35-35b-wbw-20261019/fp32-down-merge/cpu-zero-20261020/full-kt-v5-32/12_kt_sm120/validation-0000.cached.r0.pt",
+      "bytes": 61893003,
+      "sha256": "1193b3bf0f67d2de713c19295a9f2ca1802897b50e9a60f852f2f9ed190abad3"
+    },
+    {
+      "file": "/dev/shm/yyj-qwen35-35b-wbw-20261019/fp32-down-merge/cpu-zero-20261020/full-kt-v5-32/12_kt_sm120/validation-0001.cached.r0.pt",
+      "bytes": 61893131,
+      "sha256": "bbf065cbd9f612f5d4a2c26ffdd16ee25c08bfa4128b67eb9f1d486307d6e23a"
+    },
+    {
+      "file": "/dev/shm/yyj-qwen35-35b-wbw-20261019/fp32-down-merge/cpu-zero-20261020/full-kt-v5-32/12_kt_sm120/validation-0002.cached.r0.pt",
+      "bytes": 61892939,
+      "sha256": "5ab79aa763c16af47a97a943e6bf5233932454e39f17d7263fc5e5cc8120404d"
+    },
+    {
+      "file": "/dev/shm/yyj-qwen35-35b-wbw-20261019/fp32-down-merge/cpu-zero-20261020/full-kt-v5-32/12_kt_sm120/validation-0003.cached.r0.pt",
+      "bytes": 61893195,
+      "sha256": "789f1e36cbc6f41fcce097f4bb4d7aa529a55751c9ea932adcd2602299146e38"
+    }
+  ],
+  "full_model_bit_comparison": {
+    "elements": 183320576,
+    "different": 0,
+    "nonfinite": 0
+  },
+  "compiled_sources": {
+    "ext_bindings.cpp": "4ec5b1d582a5c1dd37ce9df9cd42ac94a2ab7634c220e02cb7fb4707143a22d6",
+    "operators/avx512/sm120_bf16_math.hpp": "d4f0e71fb6a9b92ae5f832a1f6e0cdd6cf0b4f02ae292450a23dad674003c1f4",
+    "operators/avx512/sm120_bf16_moe.hpp": "c73d1d26b7be174d024f8574567d66959c7f98c0abce931191f23639c02f7d45"
+  },
+  "extension_sha256": "6034d4eb99bf5125bf58b6621cb7e5e9e4aeb839c0a98e89582424bc051f19b0",
+  "no_lora": true,
+  "candidate_routed_expert_compute": "CPU only",
+  "scope": "forward at fixed common prefixes, own routing and caches; no backward or RL quality claim"
+}

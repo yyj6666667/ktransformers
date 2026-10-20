@@ -1,0 +1,101 @@
+{
+  "cuda_controls": [
+    {
+      "file": "down-m1.pt",
+      "checked_tiles": 32,
+      "certified_tiles": 0,
+      "different": 0
+    },
+    {
+      "file": "down-m128.pt",
+      "checked_tiles": 96,
+      "certified_tiles": 84,
+      "different": 0
+    },
+    {
+      "file": "down-m16.pt",
+      "checked_tiles": 96,
+      "certified_tiles": 83,
+      "different": 0
+    },
+    {
+      "file": "down-m2.pt",
+      "checked_tiles": 64,
+      "certified_tiles": 51,
+      "different": 0
+    },
+    {
+      "file": "down-m32.pt",
+      "checked_tiles": 96,
+      "certified_tiles": 82,
+      "different": 0
+    },
+    {
+      "file": "down-m4.pt",
+      "checked_tiles": 96,
+      "certified_tiles": 78,
+      "different": 0
+    },
+    {
+      "file": "down-m64.pt",
+      "checked_tiles": 96,
+      "certified_tiles": 80,
+      "different": 0
+    },
+    {
+      "file": "down-m8.pt",
+      "checked_tiles": 96,
+      "certified_tiles": 79,
+      "different": 0
+    },
+    {
+      "file": "gate_up-m1.pt",
+      "checked_tiles": 16,
+      "certified_tiles": 0,
+      "different": 0
+    },
+    {
+      "file": "gate_up-m128.pt",
+      "checked_tiles": 48,
+      "certified_tiles": 22,
+      "different": 0
+    },
+    {
+      "file": "gate_up-m16.pt",
+      "checked_tiles": 48,
+      "certified_tiles": 17,
+      "different": 0
+    },
+    {
+      "file": "gate_up-m2.pt",
+      "checked_tiles": 32,
+      "certified_tiles": 18,
+      "different": 0
+    },
+    {
+      "file": "gate_up-m32.pt",
+      "checked_tiles": 48,
+      "certified_tiles": 31,
+      "different": 0
+    },
+    {
+      "file": "gate_up-m4.pt",
+      "checked_tiles": 48,
+      "certified_tiles": 27,
+      "different": 0
+    },
+    {
+      "file": "gate_up-m64.pt",
+      "checked_tiles": 48,
+      "certified_tiles": 30,
+      "different": 0
+    },
+    {
+      "file": "gate_up-m8.pt",
+      "checked_tiles": 48,
+      "certified_tiles": 30,
+      "different": 0
+    }
+  ],
+  "random_certificates_checked": 600
+}

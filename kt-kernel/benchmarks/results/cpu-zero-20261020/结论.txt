@@ -1,0 +1,51 @@
+CPU kernel 对齐原始黄金：交付结果
+
+结论：CPU 前向已归零；decode 开销接近原 KT，prefill 仍有明显性能代价。
+这是显式选择的 SM120BF16_MOE 兼容模式，不是默认替换所有 KT/SFT 内核。
+
+精度：Qwen3.5-35B-A3B，LoRA 关闭，原始黄金实现、数据及记录保持不变。
+8 个样本 × 32 个固定前缀位置，40 层 boundary abs mean 全为 0。
+共有 hidden/logit：183,320,576 个元素，逐位不同数 0，非有限值 0。
+完整 prompt 的专家输入、路由和输出：181,585,920 个字段元素，不同数 0。
+候选自己计算路由与 KV cache；全部 routed expert gate/up、SiLU、down、merge 在 CPU。
+注意力、router 和 shared expert 保持原框架 GPU 计算。
+
+独立校验：每专家 M=1..224、单/双 NUMA、随机权重/输入及专家映射，
+103,219,200 个输出元素逐位相同；还检查了独立逻辑 batch、重载与无效参数。
+36 项回归测试通过。65,536 种 BF16 输入的 CPU SiLU 与 GPU 输出一致
+（NaN 比较分类，不要求 NaN payload 相同）。
+
+性能：模拟单层 inference MoE，E=256/H=2048/I=512/top8，2 NUMA × 24 线程。
+权重/输入哈希完全相同。各运行预热 20 次、计时 60 次；
+原 KT、FP32 merge、CPU 归零版分别运行两次，顺序 A/B/C/C/B/A。
+下表为每版 120 次样本的合并中位数，含 task/CPUInfer/计算/合并/sync；
+不含权重加载、输入复制或完整模型其他算子。
+
+场景             原 KT(ms)    FP32 merge(ms)    CPU归零(ms)    相对原KT耗时倍数
+decode     1      0.078425        0.081280      0.074464    0.949x
+decode     4      0.308837        0.306814      0.293664    0.951x
+prefill  128      3.346221        3.328823     14.446104    4.317x
+prefill  512      6.006344        5.931369     54.649968    9.099x
+
+decode 中位数约低 5%，短耗时存在波动，按基本持平理解，不宣称稳定加速。
+prefill 的 4.32x/9.10x 代价仍然很高，尚不能称为低损耗生产替代。
+本轮没有证明性能最优或性能下界；保留原快速内核与显式精确兼容内核供选择。
+
+改动要点：
+1. 匹配 decode 的 16/32 路 FMA 求和树。
+2. 用 CPU 整数算术复现 prefill 的 16 项 MMA 累加/截断与 split-K 顺序。
+3. 用严格区间判断 BF16 舍入是否唯一；无法确定时执行精确整数路径。
+4. 权重保持 BF16；按输出列分 NUMA，保持完整内积，按逻辑专家 ID 合并。
+5. 16 路 AVX512、CPU SiLU 查表、decode 融合输出与 merge、prefill 按专家复用权重。
+
+适用边界：固定 RTX5090/cuBLAS 12.8.4.1/torch 2.9.1+cu128 黄金配置，
+H=2048/I=512、每专家逻辑 M<=224、有限算术且无 FP32 溢出。
+这是前向数值兼容验证；未修改或验证对应 backward，也未做 RL reward/训练收敛结论。
+完整接口与逻辑 batch 说明见 operators/avx512/SM120_PROFILE.txt。
+
+环境保留：qj5090 /dev/shm/yyj-qwen35-35b-wbw-20261019
+本轮：fp32-down-merge/cpu-zero-20261020；最终 overlay：fp32-down-merge/overlays/sm120-v5。
+所有探索版本、原始张量与双 baseline 环境均保留在 RAM。
+
+证据：layer-0-to-39-abs-mean.csv；operator-performance.csv；evidence/validation-audit-final.json；
+evidence/final-performance；evidence/sweep-v5-all/results.json；evidence/regression-final.log。

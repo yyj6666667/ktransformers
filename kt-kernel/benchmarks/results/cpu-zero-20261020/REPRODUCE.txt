@@ -1,0 +1,35 @@
+Connect: ssh -J sap1 qj5090
+
+Root: /dev/shm/yyj-qwen35-35b-wbw-20261019
+Experiment: ROOT/fp32-down-merge/cpu-zero-20261020
+Final source: ROOT/fp32-down-merge/source-sm120-v5
+Final build: ROOT/fp32-down-merge/build-sm120-v5
+Final overlay: ROOT/fp32-down-merge/overlays/sm120-v5
+Original golden and actor-kt virtualenvs and captures are unchanged.
+
+The included build-used.sh, kt-sm120-v5-build.sh, kt-sm120-v5-validate.sh,
+kt-sm120-final-perf.sh, kt-sm120-tests.sh and kt-sm120-audit.py record exact
+commands. They reference retained source/fixture paths in the RAM experiment.
+Use new --output folders for reruns because numerical checks refuse overwrites.
+Do not rebuild over original baseline extension paths.
+
+Example from qj5090:
+zero=/dev/shm/yyj-qwen35-35b-wbw-20261019/fp32-down-merge/cpu-zero-20261020
+KT_SM120_INTERVAL=1 bash "$zero/scripts/kt-sm120-run.sh" sm120-v5 \
+  cpu_zero_operator_sweep.py --output "$zero/recheck-sweep-new"
+CUDA_VISIBLE_DEVICES=0,1,2,3 KT_SM120_INTERVAL=1 \
+  bash "$zero/scripts/kt-sm120-run.sh" sm120-v5 replay_kt_to_golden.py \
+  --stages 12_kt_sm120 --kt-sm120 --max-positions 32 \
+  --cpu-prefill-reference "$zero/golden-prefill-fixtures/prefill-experts" \
+  --output "$zero/recheck-model-new"
+KT_SM120_INTERVAL=1 bash "$zero/scripts/kt-sm120-run.sh" sm120-v5 \
+  bench_sm120_compat.py --family sm120 --fixture "$zero/performance-fixture.pt" \
+  --warmup 20 --iterations 60 --output "$zero/recheck-perf-new.json"
+
+Use KT_SM120_INTERVAL=0 for the exact integer-path ablation. All variants keep
+routed expert arithmetic on CPU. cpu_zero_wmma_reference.cu is only the CUDA
+measurement instrument used to identify the golden arithmetic, not a candidate
+implementation. No raw model weights or input/hidden .pt tensors are published;
+they are retained in RAM, with hashes/paths in the audit.
+
+Published CSV/log text normalizes line endings and trailing blanks; raw remote outputs are retained.

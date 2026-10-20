@@ -1,0 +1,5 @@
+{
+  "gpu_bit_different_except_nan_payload": 0,
+  "gpu_nan_class_different": 0,
+  "inputs": 65536
+}

@@ -27,13 +27,29 @@ def main():
     parser.add_argument("--max-positions", type=int, default=32)
     parser.add_argument("--freeze-routing", action="store_true",
                         help="diagnostic: use a separately replayed golden's full expert IDs and weights")
+    parser.add_argument("--capture-prefill-experts", action="store_true",
+                        help="save full expert inputs/outputs only in the immutable golden endpoint control")
+    parser.add_argument("--kt-sm120", action="store_true", help="use the actual KT SM120BF16_MOE CPU operator")
+    parser.add_argument("--cpu-exact", action="store_true",
+                        help="diagnostic all-CPU expert arithmetic matched to the frozen SM120 reference")
+    parser.add_argument("--cpu-prefill-reference", type=Path,
+                        help="assert all prompt expert inputs/routing/outputs against separate golden captures")
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=False)
     configure_torch()
     torch.use_deterministic_algorithms(True)
     torch.backends.cudnn.deterministic = True
+    if args.kt_sm120:
+        assert not args.cpu_exact
+        STAGES["12_kt_sm120"] = STAGES["07_full_cpu_down_dot"]
+    if args.cpu_exact:
+        STAGES["11_cpu_exact"] = STAGES["07_full_cpu_down_dot"]
     stages = args.stages.split(",")
     assert all(name in STAGES for name in stages)
+    if args.capture_prefill_experts:
+        assert stages == ["10_cuda_down"] and not args.freeze_routing and args.max_positions == 1
+    if args.cpu_prefill_reference:
+        assert ((args.cpu_exact and stages == ["11_cpu_exact"]) or (args.kt_sm120 and stages == ["12_kt_sm120"])) and not args.freeze_routing
     if args.freeze_routing:
         assert len(stages) == 1 and stages[0] not in ("00_original_kt", "01_remove_partial_round", "10_cuda_down")
     assert 0 < args.max_positions <= 32 and 0 < args.case_limit <= 8
@@ -51,11 +67,20 @@ def main():
                   "model.language_model.rotary_emb": 0, "model.language_model.norm": 3, "lm_head": 3}
     for layer in range(40):
         device_map[f"model.language_model.layers.{layer}"] = layer // 10
-    record_runtime(args.output, {"scope": "KT arithmetic replay; immutable golden target; not a production fix",
+    extra_backend = {}
+    if args.kt_sm120:
+        import kt_kernel
+        extra_backend = {"extension": kt_kernel.kt_kernel_ext.__file__,
+                         "extension_sha256": sha(kt_kernel.kt_kernel_ext.__file__),
+                         "interval_certificate": os.environ.get("KT_SM120_INTERVAL", "0")}
+    record_runtime(args.output, {"scope": ("actual KT CPU operator forward; immutable golden target" if args.kt_sm120
+                                          else "KT arithmetic replay; immutable golden target"),
+        "backend": extra_backend,
         "distribution": "four GPU layerwise; endpoint controls validate against original FSDP2 captures",
         "model_implementation_sha256": sha(implementation.__file__), "stages": stages,
         "arithmetic": {name: vars(STAGES[name]) for name in stages},
-        "max_positions": args.max_positions, "case_limit": args.case_limit, "freeze_routing": args.freeze_routing})
+        "max_positions": args.max_positions, "case_limit": args.case_limit, "freeze_routing": args.freeze_routing,
+        "kt_sm120": args.kt_sm120, "cpu_exact": args.cpu_exact, "cpu_prefill_reference": args.cpu_prefill_reference})
     model, loading = Qwen3_5MoeForConditionalGeneration.from_pretrained(
         MODEL, config=config, dtype=torch.bfloat16, local_files_only=True,
         device_map=device_map, low_cpu_mem_usage=True, output_loading_info=True)
@@ -64,13 +89,31 @@ def main():
     assert not any("lora" in name.lower() for name, _ in model.named_parameters())
     text_model = model.model.language_model
     assert len(text_model.layers) == 40
-    probe = ArithmeticProbe(args.output)
+    if args.kt_sm120:
+        from cpu_zero_operator import ExactOperator, make_cpu
+        shared_cpu = make_cpu()
+        probe = None
+    elif args.cpu_exact:
+        from cpu_zero_local import CpuProbe
+        probe = CpuProbe(args.output)
+        probe.mode = "exact"
+    else:
+        probe = ArithmeticProbe(args.output)
     active = {"stage": stages[0], "phase": "candidate"}
     golden_routing = {}
+    prefill_experts = {}
+    full_prefill_elements = 0
     for layer_idx, layer in enumerate(text_model.layers):
-        arithmetic = LayerMath(layer.mlp.experts.gate_up_proj, layer.mlp.experts.down_proj, probe, layer_idx)
+        if args.kt_sm120:
+            gu = layer.mlp.experts.gate_up_proj
+            arithmetic = ExactOperator(gu[:, :512], gu[:, 512:], layer.mlp.experts.down_proj,
+                                       max_len=224, cpu=shared_cpu)
+            print("PACKED KT", layer_idx, flush=True)
+        else:
+            arithmetic = LayerMath(layer.mlp.experts.gate_up_proj, layer.mlp.experts.down_proj, probe, layer_idx)
 
         def forward(self, hidden, ids, route, _math=arithmetic, _layer=layer_idx):
+            nonlocal full_prefill_elements
             name = active["stage"]
             if args.freeze_routing:
                 if active["phase"] == "golden":
@@ -78,7 +121,17 @@ def main():
                     name = "10_cuda_down"
                 else:
                     ids, route = golden_routing[_layer]
-            return _math.evaluate(hidden, ids, route, {name: STAGES[name]})[name].to(hidden.device)
+            value = _math.evaluate(hidden, ids, route, {name: STAGES[name]})[name]
+            reference = active.get("prefill_reference")
+            if reference is not None:
+                for field, candidate in (("input", hidden), ("ids", ids), ("route", route), ("output", value)):
+                    target = reference[_layer][field]
+                    assert torch.equal(candidate.cpu(), target), (_layer, field, "full prefill expert mismatch")
+                    full_prefill_elements += candidate.numel()
+            if args.capture_prefill_experts:
+                prefill_experts[_layer] = {"input": hidden.cpu(), "ids": ids.cpu(),
+                                           "route": route.cpu(), "output": value.cpu()}
+            return value.to(hidden.device)
 
         layer.mlp.experts.forward = types.MethodType(forward, layer.mlp.experts)
     capture = Capture()
@@ -87,6 +140,10 @@ def main():
     controls = {"00_original_kt": ROOT / "outputs/kt-step1-002/reference_cached",
                 "01_remove_partial_round": ROOT / "fp32-down-merge/compact-final/replay-after/reference_cached",
                 "10_cuda_down": ROOT / "outputs/native-step1-001/generated_cached"}
+    if args.kt_sm120:
+        controls["12_kt_sm120"] = controls["10_cuda_down"]
+    if args.cpu_exact:
+        controls["11_cpu_exact"] = controls["10_cuda_down"]
     all_results = []
     with torch.no_grad():
         for name in stages:
@@ -103,7 +160,10 @@ def main():
                                     map_location="cpu", weights_only=False)
                 cached, hidden_parts, logits = None, {}, []
                 golden_cache = None
+                full_prefill = (torch.load(args.cpu_prefill_reference / filename, map_location="cpu", weights_only=False)
+                                if args.cpu_prefill_reference else None)
                 for pos in range(len(response)):
+                    active["prefill_reference"] = full_prefill if pos == 0 else None
                     values = prompt if pos == 0 else [response[pos - 1]]
                     offset = 0 if pos == 0 else len(prompt) + pos - 1
                     ids = torch.tensor([values], device="cuda:0", dtype=torch.long)
@@ -134,6 +194,11 @@ def main():
                 record = {"prompt": prompt, "response": response, "logits": torch.stack(logits),
                           "hidden": {key: torch.cat(value) for key, value in hidden_parts.items()}}
                 torch.save(record, folder / filename)
+                if args.capture_prefill_experts:
+                    capture_folder = args.output / "prefill-experts"
+                    capture_folder.mkdir(exist_ok=True)
+                    torch.save(prefill_experts, capture_folder / filename)
+                    prefill_experts.clear()
                 for layer in range(40):
                     key = f"layer.{layer}.boundary"
                     delta = (record["hidden"][key].double() - golden["hidden"][key][:len(response)].double()).abs()
@@ -159,6 +224,8 @@ def main():
                       "abs_mean_by_layer": {layer: total/count for layer, (total, count) in totals.items()},
                       "endpoint_control": {"different": different, "elements": elements} if name in controls else None,
                       "freeze_routing": args.freeze_routing}
+            if args.cpu_prefill_reference:
+                result["full_prefill_expert_control"] = {"different": 0, "elements": full_prefill_elements}
             dump(folder / "summary.json", result)
             all_results.append(result)
             dump(args.output / "progress.json", all_results)

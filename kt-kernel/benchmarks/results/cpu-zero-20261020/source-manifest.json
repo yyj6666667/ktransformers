@@ -1,0 +1,5 @@
+{
+  "/dev/shm/yyj-qwen35-35b-wbw-20261019/fp32-down-merge/source-sm120-v5/kt-kernel/operators/avx512/sm120_bf16_moe.hpp": "c73d1d26b7be174d024f8574567d66959c7f98c0abce931191f23639c02f7d45",
+  "/dev/shm/yyj-qwen35-35b-wbw-20261019/fp32-down-merge/source-sm120-v5/kt-kernel/operators/avx512/sm120_bf16_math.hpp": "d4f0e71fb6a9b92ae5f832a1f6e0cdd6cf0b4f02ae292450a23dad674003c1f4",
+  "/dev/shm/yyj-qwen35-35b-wbw-20261019/fp32-down-merge/source-sm120-v5/kt-kernel/ext_bindings.cpp": "4ec5b1d582a5c1dd37ce9df9cd42ac94a2ab7634c220e02cb7fb4707143a22d6"
+}

@@ -1,0 +1,230 @@
+{
+  "gate_up": [
+    {
+      "lanes": 16,
+      "contiguous": false,
+      "elements": 1348,
+      "bf16_different": 0,
+      "fp32_different": 0
+    },
+    {
+      "lanes": 32,
+      "contiguous": false,
+      "elements": 1348,
+      "bf16_different": 18,
+      "fp32_different": 918
+    },
+    {
+      "lanes": 16,
+      "contiguous": true,
+      "elements": 1348,
+      "bf16_different": 19,
+      "fp32_different": 998
+    },
+    {
+      "lanes": 64,
+      "contiguous": false,
+      "elements": 1348,
+      "bf16_different": 21,
+      "fp32_different": 914
+    },
+    {
+      "lanes": 128,
+      "contiguous": true,
+      "elements": 1348,
+      "bf16_different": 22,
+      "fp32_different": 960
+    },
+    {
+      "lanes": 64,
+      "contiguous": true,
+      "elements": 1348,
+      "bf16_different": 22,
+      "fp32_different": 999
+    },
+    {
+      "lanes": 2,
+      "contiguous": false,
+      "elements": 1348,
+      "bf16_different": 23,
+      "fp32_different": 1160
+    },
+    {
+      "lanes": 128,
+      "contiguous": false,
+      "elements": 1348,
+      "bf16_different": 24,
+      "fp32_different": 929
+    },
+    {
+      "lanes": 32,
+      "contiguous": true,
+      "elements": 1348,
+      "bf16_different": 25,
+      "fp32_different": 995
+    },
+    {
+      "lanes": 8,
+      "contiguous": false,
+      "elements": 1348,
+      "bf16_different": 25,
+      "fp32_different": 997
+    },
+    {
+      "lanes": 4,
+      "contiguous": false,
+      "elements": 1348,
+      "bf16_different": 26,
+      "fp32_different": 1085
+    },
+    {
+      "lanes": 8,
+      "contiguous": true,
+      "elements": 1348,
+      "bf16_different": 29,
+      "fp32_different": 1055
+    },
+    {
+      "lanes": 4,
+      "contiguous": true,
+      "elements": 1348,
+      "bf16_different": 32,
+      "fp32_different": 1101
+    },
+    {
+      "lanes": 2,
+      "contiguous": true,
+      "elements": 1348,
+      "bf16_different": 42,
+      "fp32_different": 1179
+    },
+    {
+      "lanes": 1,
+      "contiguous": false,
+      "elements": 1348,
+      "bf16_different": 48,
+      "fp32_different": 1229
+    },
+    {
+      "lanes": 1,
+      "contiguous": true,
+      "elements": 1348,
+      "bf16_different": 48,
+      "fp32_different": 1229
+    }
+  ],
+  "down": [
+    {
+      "lanes": 32,
+      "contiguous": true,
+      "elements": 2657,
+      "bf16_different": 0,
+      "fp32_different": 0
+    },
+    {
+      "lanes": 8,
+      "contiguous": true,
+      "elements": 2657,
+      "bf16_different": 36,
+      "fp32_different": 1753
+    },
+    {
+      "lanes": 16,
+      "contiguous": true,
+      "elements": 2657,
+      "bf16_different": 37,
+      "fp32_different": 1707
+    },
+    {
+      "lanes": 4,
+      "contiguous": true,
+      "elements": 2657,
+      "bf16_different": 37,
+      "fp32_different": 1865
+    },
+    {
+      "lanes": 64,
+      "contiguous": false,
+      "elements": 2657,
+      "bf16_different": 39,
+      "fp32_different": 1777
+    },
+    {
+      "lanes": 32,
+      "contiguous": false,
+      "elements": 2657,
+      "bf16_different": 40,
+      "fp32_different": 1775
+    },
+    {
+      "lanes": 64,
+      "contiguous": true,
+      "elements": 2657,
+      "bf16_different": 41,
+      "fp32_different": 1727
+    },
+    {
+      "lanes": 16,
+      "contiguous": false,
+      "elements": 2657,
+      "bf16_different": 41,
+      "fp32_different": 1747
+    },
+    {
+      "lanes": 128,
+      "contiguous": false,
+      "elements": 2657,
+      "bf16_different": 41,
+      "fp32_different": 1764
+    },
+    {
+      "lanes": 128,
+      "contiguous": true,
+      "elements": 2657,
+      "bf16_different": 43,
+      "fp32_different": 1752
+    },
+    {
+      "lanes": 8,
+      "contiguous": false,
+      "elements": 2657,
+      "bf16_different": 43,
+      "fp32_different": 1793
+    },
+    {
+      "lanes": 4,
+      "contiguous": false,
+      "elements": 2657,
+      "bf16_different": 43,
+      "fp32_different": 1838
+    },
+    {
+      "lanes": 2,
+      "contiguous": false,
+      "elements": 2657,
+      "bf16_different": 47,
+      "fp32_different": 1931
+    },
+    {
+      "lanes": 2,
+      "contiguous": true,
+      "elements": 2657,
+      "bf16_different": 51,
+      "fp32_different": 1966
+    },
+    {
+      "lanes": 1,
+      "contiguous": false,
+      "elements": 2657,
+      "bf16_different": 68,
+      "fp32_different": 2115
+    },
+    {
+      "lanes": 1,
+      "contiguous": true,
+      "elements": 2657,
+      "bf16_different": 68,
+      "fp32_different": 2115
+    }
+  ]
+}

@@ -1,0 +1,34 @@
+[
+  {
+    "file": "down-m1.pt",
+    "fp32_elements": 65536,
+    "fp32_different": 0,
+    "bf16_different_vs_mma": 0,
+    "bf16_different_vs_cublas": 0,
+    "first_mismatches": []
+  },
+  {
+    "file": "down-m2.pt",
+    "fp32_elements": 131072,
+    "fp32_different": 0,
+    "bf16_different_vs_mma": 0,
+    "bf16_different_vs_cublas": 0,
+    "first_mismatches": []
+  },
+  {
+    "file": "gate_up-m1.pt",
+    "fp32_elements": 131072,
+    "fp32_different": 0,
+    "bf16_different_vs_mma": 0,
+    "bf16_different_vs_cublas": 1,
+    "first_mismatches": []
+  },
+  {
+    "file": "gate_up-m2.pt",
+    "fp32_elements": 262144,
+    "fp32_different": 0,
+    "bf16_different_vs_mma": 0,
+    "bf16_different_vs_cublas": 0,
+    "first_mismatches": []
+  }
+]

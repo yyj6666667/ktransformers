@@ -1,0 +1,82 @@
+SM120BF16_MOE: opt-in CPU forward compatibility profile
+
+Target and scope
+---------------
+This backend matches the frozen native HF eager expert forward used in the
+Qwen3.5-35B-A3B investigation. It is deliberately a separate, explicit backend;
+AMXBF16_MOE and all SFT/backward APIs keep their existing behavior.
+
+Reference: RTX 5090 (SM120, 170 SMs), PyTorch 2.9.1+cu128,
+nvidia-cublas-cu12 12.8.4.1; allow_bf16_reduced_precision_reduction=False;
+TF32=False; CUBLAS_WORKSPACE_CONFIG=:4096:8; eager experts; no LoRA.
+CPU build: GCC, AVX512-BF16; tested on EPYC 9355 with one/two NUMA subpools.
+H=2048, I=512; contiguous unquantized BF16 weights; every routed expert on CPU;
+no clamp, GPU expert mask, incremental output, backward, or optimizer support.
+The arithmetic model concerns finite inputs/weights and finite FP32 accumulation
+without overflow. It is not an IEEE special-value/overflow implementation.
+Shapes outside this profile must not silently inherit a bit-exact claim.
+Per-expert logical M=1..224 is profiled and tested; larger M is rejected.
+NVIDIA does not specify MMA accumulation order/rounding as a portable contract:
+https://docs.nvidia.com/cuda/archive/12.8.1/parallel-thread-execution/index.html
+Therefore a new GPU/cuBLAS/runtime requires a new dispatch and arithmetic audit.
+
+Selection
+---------
+Construct kt_kernel.kt_kernel_ext.moe.SM120BF16_MOE(MOEConfig) and use the same
+load_weights_task/forward_task/CPUInfer submission interface as AMXBF16_MOE.
+Weight pointers must remain valid through load/reload. The operator owns packed
+BF16 copies. Calls on one operator/worker pool are serialized, as in existing KT.
+The benchmark adapter is benchmarks/cpu_zero_operator.py:ExactOperator.
+KT_SM120_INTERVAL=1 is the default; 0 disables the certified fast path while
+keeping the same exact fallback arithmetic. Set it before construction.
+
+Logical batches matter: if four actor ranks concatenate four independent decode
+rows, call moe.set_logical_batch_size(1) before submitting that group. This runs
+four M=1 logical forwards. Default 0 treats the supplied rows as one logical
+batch. Do not change this setting while work is pending. A legitimate M=4 eager
+forward can select different arithmetic from four separate M=1 forwards.
+
+Arithmetic
+----------
+Decode gate/up: 16 strided FP32 FMA chains, then a halving reduction tree.
+Decode down: 32 contiguous FP32 FMA chains, then a halving reduction tree.
+Gradual underflow and round-to-nearest are scoped to KT workers and restored.
+
+Prefill uses the measured 16-product SM120 MMA model: align BF16 products and
+FP32 carry to a 26-bit shared unnormalized exponent; truncate magnitudes, sum,
+then round toward zero to FP32. Positive/negative integer subtotals fit uint32.
+The 16-lane implementation avoids FP64 or int64 in its exact production path.
+Gate/up M=17..32 uses K chunks 448; M=33..64 uses chunks 1024; others use full K.
+Down uses full K. Split-K FP32 partials are added in the measured ascending order.
+
+The optional interval path encloses each real block sum with directed FP32
+arithmetic, then bounds only terms that could lose bits in MMA alignment.
+If both interval endpoints round to the same BF16 value, that value is certified.
+Otherwise the integer model computes the entire tile. No tolerance, sample-
+specific lookup, GPU fallback or GPU-produced answer table is used.
+
+Gate/up each round to BF16. CPU-generated SiLU tables cover the complete BF16
+input domain and have been checked against GPU SiLU. SiLU and its multiplication
+with up each round to BF16. Complete down outputs, route products, and every
+expert addition follow the eager reference's BF16 boundaries. Experts merge in
+ascending logical expert ID, including non-identity physical mappings.
+
+NUMA partitions output columns, not K. Small BF16 activations are shared; no
+cross-NUMA down partial reduction changes dot-product order. Weights remain
+BF16. Compute buffers are preallocated. Decode fuses down/route/merge; prefill
+can reuse each weight tile across the rows of its expert before merging.
+
+Validation and reproduction
+---------------------------
+See benchmarks/results/cpu-zero-20261020 for runtime/build hashes, the 40-layer
+abs-mean table, raw operator timings, original-golden preservation audit, and
+exact run commands. The full-model check uses candidate routing and KV caches;
+it replays retained common prefixes and compares all stored hidden/logit stages.
+It leaves attention, router and shared expert in the original GPU framework;
+all routed expert gate/up, activation, down and merge computations are CPU-only.
+It does not establish backward equality, RL reward equivalence, full training
+convergence, or bit equality beyond the documented profile and evaluated inputs.
+
+Automated regression: test/per_commit/test_sm120_bf16_compat.py, plus the prior
+BF16 merge regression. The new GPU-reference test skips outside the pinned
+hardware/runtime, rather than comparing with a different arithmetic target.

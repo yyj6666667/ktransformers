@@ -60,6 +60,9 @@ static const bool _is_plain_ = false;
 #endif
 // AVX2 backends — always available on x86_64 (no AMX/AVX512 dependency)
 #if defined(__x86_64__)
+#if defined(__AVX512BF16__) && defined(__GNUC__) && !defined(__clang__)
+#include "operators/avx512/sm120_bf16_moe.hpp"
+#endif
 #include "operators/avx2/bf16-moe.hpp"
 #include "operators/avx2/fp8-moe.hpp"
 #include "operators/avx2/gptq_int4-moe.hpp"
@@ -186,20 +189,20 @@ std::vector<std::vector<T*>> uint_to_void_ptr_nested(const std::vector<std::vect
         self.name = uint_to_void_ptr_nested<void>(val);                                \
       })
 
-template <class T>
+template <class T, class MoeClass = TP_MOE<T>>
 class MOEBindings {
  public:
   class WarmUpBindings {
    public:
     struct Args {
       CPUInfer* cpuinfer;
-      TP_MOE<T>* moe;
+      MoeClass* moe;
     };
     static void inner(void* args) {
       Args* args_ = (Args*)args;
-      args_->cpuinfer->enqueue(&TP_MOE<T>::warm_up, args_->moe);
+      args_->cpuinfer->enqueue(&MoeClass::warm_up, args_->moe);
     }
-    static std::pair<intptr_t, intptr_t> cpuinfer_interface(std::shared_ptr<TP_MOE<T>> moe) {
+    static std::pair<intptr_t, intptr_t> cpuinfer_interface(std::shared_ptr<MoeClass> moe) {
       Args* args = new Args{nullptr, moe.get()};
       return std::make_pair((intptr_t)&inner, (intptr_t)args);
     }
@@ -208,13 +211,13 @@ class MOEBindings {
    public:
     struct Args {
       CPUInfer* cpuinfer;
-      TP_MOE<T>* moe;
+      MoeClass* moe;
     };
     static void inner(void* args) {
       Args* args_ = (Args*)args;
-      args_->cpuinfer->enqueue(&TP_MOE<T>::load_weights, args_->moe);
+      args_->cpuinfer->enqueue(&MoeClass::load_weights, args_->moe);
     }
-    static std::pair<intptr_t, intptr_t> cpuinfer_interface(std::shared_ptr<TP_MOE<T>> moe,
+    static std::pair<intptr_t, intptr_t> cpuinfer_interface(std::shared_ptr<MoeClass> moe,
                                                             const uintptr_t physical_to_logical_map = 0) {
       Args* args = new Args{nullptr, moe.get()};
       if (physical_to_logical_map) {
@@ -225,7 +228,7 @@ class MOEBindings {
       }
       return std::make_pair((intptr_t)&inner, (intptr_t)args);
     }
-    static std::pair<intptr_t, intptr_t> cpuinfer_interface(std::shared_ptr<TP_MOE<T>> moe) {
+    static std::pair<intptr_t, intptr_t> cpuinfer_interface(std::shared_ptr<MoeClass> moe) {
       return cpuinfer_interface(moe, 0);
     }
   };
@@ -233,7 +236,7 @@ class MOEBindings {
    public:
     struct Args {
       CPUInfer* cpuinfer;
-      TP_MOE<T>* moe;
+      MoeClass* moe;
       intptr_t qlen;
       int k;
       intptr_t expert_ids;
@@ -244,16 +247,16 @@ class MOEBindings {
     };
     static void inner(void* args) {
       Args* args_ = (Args*)args;
-      args_->cpuinfer->enqueue(&TP_MOE<T>::forward_binding, args_->moe, args_->qlen, args_->k, args_->expert_ids,
+      args_->cpuinfer->enqueue(&MoeClass::forward_binding, args_->moe, args_->qlen, args_->k, args_->expert_ids,
                                args_->weights, args_->input, args_->output, args_->incremental);
     }
-    static std::pair<intptr_t, intptr_t> cpuinfer_interface(std::shared_ptr<TP_MOE<T>> moe, intptr_t qlen, int k,
+    static std::pair<intptr_t, intptr_t> cpuinfer_interface(std::shared_ptr<MoeClass> moe, intptr_t qlen, int k,
                                                             intptr_t expert_ids, intptr_t weights, intptr_t input,
                                                             intptr_t output, bool incremental = false) {
       Args* args = new Args{nullptr, moe.get(), qlen, k, expert_ids, weights, input, output, incremental};
       return std::make_pair((intptr_t)&inner, (intptr_t)args);
     }
-    static std::pair<intptr_t, intptr_t> cpuinfer_interface(std::shared_ptr<TP_MOE<T>> moe, intptr_t qlen, int k,
+    static std::pair<intptr_t, intptr_t> cpuinfer_interface(std::shared_ptr<MoeClass> moe, intptr_t qlen, int k,
                                                             intptr_t expert_ids, intptr_t weights, intptr_t input,
                                                             intptr_t output) {
       return cpuinfer_interface(moe, qlen, k, expert_ids, weights, input, output, false);
@@ -454,10 +457,9 @@ void bind_moe_sft_module(py::module_& moe_module, const char* name) {
 }
 #endif  // defined(__x86_64__)
 
-template <typename MoeTP>
+template <typename MoeTP, typename MoeClass = TP_MOE<MoeTP>>
 void bind_moe_module(py::module_& moe_module, const char* name) {
-  using MoeClass = TP_MOE<MoeTP>;
-  using MoeBindings = MOEBindings<MoeTP>;
+  using MoeBindings = MOEBindings<MoeTP, MoeClass>;
 
   auto moe_cls = py::class_<MoeClass, MoE_Interface, std::shared_ptr<MoeClass>>(moe_module, name);
 
@@ -479,6 +481,10 @@ void bind_moe_module(py::module_& moe_module, const char* name) {
       .def("warm_up", &MoeClass::warm_up)
       .def("load_weights", &MoeClass::load_weights)
       .def("forward", &MoeClass::forward_binding);
+
+  if constexpr (requires { &MoeClass::set_logical_batch_size; }) {
+    moe_cls.def("set_logical_batch_size", &MoeClass::set_logical_batch_size, py::arg("rows"));
+  }
 
   // Bind write_weight_scale_to_buffer_task for MoE types that support it
   // Uses SFINAE to detect if MoeClass has write_weight_scale_to_buffer method
@@ -953,6 +959,9 @@ PYBIND11_MODULE(kt_kernel_ext, m) {
   py::class_<MoE_Interface, std::shared_ptr<MoE_Interface>>(moe_module, "MoE_Interface");
 
   bind_moe_module<LLAMA_MOE_TP>(moe_module, "MOE");
+#if defined(__x86_64__) && defined(__AVX512BF16__) && defined(__GNUC__) && !defined(__clang__)
+  bind_moe_module<void, kt::sm120::Moe>(moe_module, "SM120BF16_MOE");
+#endif
 
 #if defined(__x86_64__) && defined(USE_AMX_AVX_KERNEL)
   bind_moe_module<AMX_MOE_TP<amx::GemmKernel224Int8>>(moe_module, "AMXInt8_MOE");
