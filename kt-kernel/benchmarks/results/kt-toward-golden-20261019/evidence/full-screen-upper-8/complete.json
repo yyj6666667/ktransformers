@@ -1,0 +1,11 @@
+{
+  "exit": "success",
+  "stages": [
+    "10_cuda_down",
+    "06_expert_id_order",
+    "07_full_cpu_down_dot",
+    "08_cuda_silu",
+    "09_cuda_gate_up"
+  ],
+  "positions_per_stage": 64
+}

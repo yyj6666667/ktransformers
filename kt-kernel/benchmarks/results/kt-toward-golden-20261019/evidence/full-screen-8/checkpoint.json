@@ -1,0 +1,10 @@
+{
+  "completed_stages": [
+    "00_original_kt",
+    "01_remove_partial_round",
+    "10_cuda_down",
+    "02_round_complete_expert",
+    "03_round_silu"
+  ],
+  "reason": "batch CPU-only input transfer once per layer in diagnostic harness; arithmetic unchanged"
+}

@@ -1,0 +1,25 @@
+{
+  "pid": 2488779,
+  "command": [
+    "flock",
+    "-n",
+    "/dev/shm/yyj-qwen35-35b-wbw-20261019/gpu4.lock",
+    "/dev/shm/yyj-qwen35-35b-wbw-20261019/actor-kt/venv/bin/python",
+    "/dev/shm/yyj-qwen35-35b-wbw-20261019/fp32-down-merge/toward-golden/kt-kernel/benchmarks/replay_kt_to_golden.py",
+    "--output",
+    "/dev/shm/yyj-qwen35-35b-wbw-20261019/fp32-down-merge/toward-golden/full-frozen-routing-32",
+    "--stages",
+    "09_cuda_gate_up",
+    "--max-positions",
+    "32",
+    "--freeze-routing"
+  ],
+  "physical_gpus": [
+    4,
+    5,
+    6,
+    7
+  ],
+  "diagnostic_omp_thread_limit": 1,
+  "intervention": "freeze BOTH expert IDs and routing weights at every layer and position, including full prefill"
+}

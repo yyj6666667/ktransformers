@@ -1,0 +1,8 @@
+{
+  "completed_stages": [
+    "00_original_kt",
+    "04_round_weighted_product",
+    "05_round_expert_accumulation"
+  ],
+  "reason": "remaining independent stages already run on GPUs 4-7"
+}

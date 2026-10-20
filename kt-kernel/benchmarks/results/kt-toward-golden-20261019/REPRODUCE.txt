@@ -1,0 +1,111 @@
+KT -> original golden: directional arithmetic ablations
+
+The reference remains the original HF Qwen3.5-35B-A3B eager BF16 implementation
+and its frozen records. Only the candidate arithmetic moves from KT toward that
+reference. Both LoRA paths are disabled. No installed golden file is modified.
+
+These are diagnostic arithmetic replays, not optimized replacements for the KT
+operator. The replay's AVX512 dot product, activation approximation and FP32 FMA
+merge reproduce the original KT operator exactly on the local controls. The
+complete-model endpoint controls additionally compare all common hidden stages
+and logits to retained actual KT / golden captures. Passing the all-CUDA endpoint
+means the diagnostic harness is valid; it is not a proposed CPU-kernel fix.
+
+Stages 00 through 10 are cumulative:
+00 Original KT: CPU dot products and fused activation; BF16 down result per TP
+   partition; FP32 expert merge in router order, then FP32 TP sum, final BF16.
+01 Keep the down partials in FP32 until after expert/TP merging. This is the
+   previously implemented production patch; it alone has a small effect.
+02 Sum the two FP32 down partials per expert first, round that complete expert to
+   BF16, then merge experts in FP32. This necessarily also changes reduction
+   grouping; it is not a pure cast-only switch.
+03 Round SiLU to BF16 before multiplying by up, then round that product to BF16.
+   The CPU exponential approximation is still retained.
+04 Round each expert-output times routing-weight product to BF16.
+05 Round the accumulator to BF16 after each expert addition, still router order.
+06 Change that addition order to ascending expert ID, as in the original eager
+   golden. BF16 addition is non-associative; order matters after stage 05.
+07 Use one CPU dot over the complete intermediate dimension rather than two
+   partial dots followed by FP32 addition.
+08 Replace only the CPU activation approximation with original CUDA SiLU.
+09 Replace only gate/up dot products with the original CUDA GEMM.
+10 Replace the remaining down dot product with the original CUDA GEMM. This
+   endpoint must reproduce the unchanged original golden exactly.
+
+The non-numbered controls change subsets from stage 00, not the previous row.
+Their complete settings are recorded in controls.json and summary.json.
+Cumulative percentage reductions cannot be added or assigned solely to the last
+switch; the operators interact. For example, changing order in an FP32 reduction
+is a different experiment from changing order after enabling BF16 accumulation.
+
+Local measurements
+40 decoder layers, eight fixed wbw cases, decode positions 1,2,14,21,31: 1600
+independent layer/input pairs. Each layer consumes its own frozen golden
+post-attention-normalized input, top-k expert IDs and routing weights. The shared
+expert is excluded from the measured MoE output, but included in the assertion
+that fresh official HF execution reproduces the recorded complete MLP output.
+Actual KT receives the same token repeated four times, matching the original
+four-rank gathered decode input. Every candidate is compared to the same golden.
+The local mean across layers weights equally sized observations equally.
+
+Complete-model measurements
+Full decoder and KV-cache propagation consumes the same frozen golden token
+prefixes. The diagnostic host uses one process with the 40 layers distributed
+across four GPUs, with the same HF source, eager attention and torch linear-
+attention fallback. The endpoint controls check that this diagnostic distribution
+reproduces the original FSDP2 captures. Model/eager expert implementations on disk
+remain unchanged. Golden controls are not regenerated to match a candidate.
+
+Screening uses the first eight positions of all eight cases (64 observations per
+stage, including all eight last-prompt prefill positions). The detailed follow-up
+uses all 32 positions of all eight cases (256 observations per stage). Columns
+and files for these scopes are separate. Local errors reset inputs at every
+layer; propagated errors include upstream layer and recurrent/cache differences.
+No complete-answer quality, reward, training/backward or performance conclusion
+is inferred from these numerical probes.
+
+Reproduction on the retained qj5090 RAM environment
+ssh -J sap1 qj5090
+Fixture root: /dev/shm/yyj-qwen35-35b-wbw-20261019
+Experiment root: <fixture root>/fp32-down-merge/toward-golden
+Python: <fixture root>/actor-kt/venv/bin/python
+Set KT_MERGE_FIXTURE_ROOT to the fixture root, KT_KERNEL_CPU_VARIANT=avx512_bf16,
+PYTHONHASHSEED=42, CUBLAS_WORKSPACE_CONFIG=:4096:8. Set LD_LIBRARY_PATH as in
+../bf16-fp32-merge-20261019/build-used.sh. Set PYTHONPATH to
+<fixture root>/fp32-down-merge/overlays/before for the original KT local control.
+
+From the repository root, with CUDA_VISIBLE_DEVICES=0:
+  python kt-kernel/benchmarks/kt_to_golden_ablation.py --layers 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39 --output <fresh-local-directory>
+With CUDA_VISIBLE_DEVICES=0,1,2,3:
+  python kt-kernel/benchmarks/replay_kt_to_golden.py --max-positions 8 --output <fresh-screen-directory>
+  python kt-kernel/benchmarks/replay_kt_to_golden.py --stages <selected-comma-separated-stage-names> --max-positions 32 --output <fresh-followup-directory>
+The probe compiles with g++ and requires AVX512-BF16 hardware. Every output
+folder must be fresh. Raw tensors and model weights remain in RAM; small reports,
+control metadata and execution commands are published in this directory.
+
+CPU precision counterfactual
+kt_cpu_precision_probe.py checks layers 0,10,20,30,39 on the same 40 frozen
+decode inputs each. Dot products accumulate in CPU FP64, then explicitly cast
+FP64 -> FP32 -> BF16, retaining the GEMM output boundary. Five variants separate
+gate/up accuracy, down accuracy and the SiLU approximation. This is an arithmetic
+control only; it makes no performance proposal and does not assume the original
+golden BF16 result is the exact real-valued answer. All results are in cpu-precision/.
+
+The 32-position follow-up sets OMP_THREAD_LIMIT=1 for the independent arithmetic
+probe. Each AVX512 output dot retains its exact accumulation order; only scheduling
+of independent outputs changes. Stage 00 validates this setting against all
+retained actual-KT hidden/logit elements before interpreting candidate results.
+This scheduling setting does not change the real KT operator benchmark or binary.
+
+Routing intervention
+replay_kt_to_golden.py --stages 09_cuda_gate_up --freeze-routing --max-positions 32
+runs separate golden and candidate KV caches. Before each candidate forward, a
+fresh golden forward of the identical fixed prefix supplies all expert IDs and
+routing weights, including every prompt position. Its last-position logits and
+every layer's last-position IDs/weights must exactly match retained original
+golden records. The candidate retains CPU down GEMM and its own activations and
+KV cache. This freezes BOTH discrete expert choices and continuous route weights;
+it cannot isolate those two effects from each other and is not a deployable fix.
+The candidate's normal router still executes for observation, but its result is
+overridden at the expert call. Captured candidate router hooks therefore show
+computed, not executed, choices in this intervention only.

@@ -1,0 +1,162 @@
+{
+  "actual": "before",
+  "extension_sha256": "e479f011c87d98149468d8136e47d6f06e7abf3875fbed263136095184f292ce",
+  "reference": "unchanged original golden",
+  "layers": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28,
+    29,
+    30,
+    31,
+    32,
+    33,
+    34,
+    35,
+    36,
+    37,
+    38,
+    39
+  ],
+  "positions": [
+    1,
+    2,
+    14,
+    21,
+    31
+  ],
+  "scope": "local decode MoE only; frozen per-layer input, weights and routing; no propagated error",
+  "stages": {
+    "00_original_kt": {
+      "gate": "cpu",
+      "activation": "cpu_fused",
+      "down": "tp_bf16",
+      "merge": "tp_fp32",
+      "order": "router"
+    },
+    "01_remove_partial_round": {
+      "gate": "cpu",
+      "activation": "cpu_fused",
+      "down": "tp_fp32",
+      "merge": "tp_fp32",
+      "order": "router"
+    },
+    "02_round_complete_expert": {
+      "gate": "cpu",
+      "activation": "cpu_fused",
+      "down": "tp_sum_bf16",
+      "merge": "expert_fp32",
+      "order": "router"
+    },
+    "03_round_silu": {
+      "gate": "cpu",
+      "activation": "cpu_split",
+      "down": "tp_sum_bf16",
+      "merge": "expert_fp32",
+      "order": "router"
+    },
+    "04_round_weighted_product": {
+      "gate": "cpu",
+      "activation": "cpu_split",
+      "down": "tp_sum_bf16",
+      "merge": "product_bf16",
+      "order": "router"
+    },
+    "05_round_expert_accumulation": {
+      "gate": "cpu",
+      "activation": "cpu_split",
+      "down": "tp_sum_bf16",
+      "merge": "acc_bf16",
+      "order": "router"
+    },
+    "06_expert_id_order": {
+      "gate": "cpu",
+      "activation": "cpu_split",
+      "down": "tp_sum_bf16",
+      "merge": "acc_bf16",
+      "order": "expert"
+    },
+    "07_full_cpu_down_dot": {
+      "gate": "cpu",
+      "activation": "cpu_split",
+      "down": "cpu_full",
+      "merge": "acc_bf16",
+      "order": "expert"
+    },
+    "08_cuda_silu": {
+      "gate": "cpu",
+      "activation": "cuda_split",
+      "down": "cpu_full",
+      "merge": "acc_bf16",
+      "order": "expert"
+    },
+    "09_cuda_gate_up": {
+      "gate": "cuda",
+      "activation": "cuda_split",
+      "down": "cpu_full",
+      "merge": "acc_bf16",
+      "order": "expert"
+    },
+    "10_cuda_down": {
+      "gate": "cuda",
+      "activation": "cuda_split",
+      "down": "cuda_full",
+      "merge": "acc_bf16",
+      "order": "expert"
+    },
+    "only_round_silu": {
+      "gate": "cpu",
+      "activation": "cpu_split",
+      "down": "tp_bf16",
+      "merge": "tp_fp32",
+      "order": "router"
+    },
+    "only_full_cpu_down": {
+      "gate": "cpu",
+      "activation": "cpu_fused",
+      "down": "cpu_full",
+      "merge": "expert_fp32",
+      "order": "router"
+    },
+    "only_golden_merge": {
+      "gate": "cpu",
+      "activation": "cpu_fused",
+      "down": "tp_sum_bf16",
+      "merge": "acc_bf16",
+      "order": "expert"
+    },
+    "golden_graph_cpu_fused": {
+      "gate": "cpu",
+      "activation": "cpu_fused",
+      "down": "cpu_full",
+      "merge": "acc_bf16",
+      "order": "expert"
+    }
+  }
+}

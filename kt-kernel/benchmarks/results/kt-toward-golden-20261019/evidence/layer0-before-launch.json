@@ -1,0 +1,17 @@
+{
+  "pid": 2385649,
+  "command": [
+    "flock",
+    "-n",
+    "/dev/shm/yyj-qwen35-35b-wbw-20261019/gpu.lock",
+    "/dev/shm/yyj-qwen35-35b-wbw-20261019/actor-kt/venv/bin/python",
+    "/dev/shm/yyj-qwen35-35b-wbw-20261019/fp32-down-merge/toward-golden/kt-kernel/benchmarks/kt_to_golden_ablation.py",
+    "--output",
+    "/dev/shm/yyj-qwen35-35b-wbw-20261019/fp32-down-merge/toward-golden/layer0-before",
+    "--actual",
+    "before",
+    "--layers",
+    "0"
+  ],
+  "variant": "before"
+}

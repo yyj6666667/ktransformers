@@ -1,0 +1,7 @@
+{
+  "exit": "success",
+  "stages": [
+    "09_cuda_gate_up"
+  ],
+  "positions_per_stage": 256
+}

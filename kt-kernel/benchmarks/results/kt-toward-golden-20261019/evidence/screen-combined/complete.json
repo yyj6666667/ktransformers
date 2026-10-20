@@ -1,0 +1,5 @@
+{
+  "stages": 11,
+  "positions_per_stage": 64,
+  "repeated_control_values_identical": true
+}

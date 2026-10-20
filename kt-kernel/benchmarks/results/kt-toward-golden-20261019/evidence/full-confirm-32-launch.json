@@ -1,0 +1,23 @@
+{
+  "pid": 2486702,
+  "command": [
+    "flock",
+    "/dev/shm/yyj-qwen35-35b-wbw-20261019/gpu.lock",
+    "/dev/shm/yyj-qwen35-35b-wbw-20261019/actor-kt/venv/bin/python",
+    "/dev/shm/yyj-qwen35-35b-wbw-20261019/fp32-down-merge/toward-golden/kt-kernel/benchmarks/replay_kt_to_golden.py",
+    "--output",
+    "/dev/shm/yyj-qwen35-35b-wbw-20261019/fp32-down-merge/toward-golden/full-confirm-32",
+    "--stages",
+    "00_original_kt,06_expert_id_order,08_cuda_silu,09_cuda_gate_up,10_cuda_down",
+    "--max-positions",
+    "32"
+  ],
+  "physical_gpus": [
+    0,
+    1,
+    2,
+    3
+  ],
+  "diagnostic_omp_thread_limit": 1,
+  "validation": "stage00 must match actual retained KT on all 256 positions"
+}

@@ -1,0 +1,51 @@
+KT -> unchanged original golden: arithmetic ablations
+
+LOCAL: 40 layers x 40 frozen decode inputs; each layer gets its own original golden input/routing.
+PROPAGATED: same fixed prefixes through the complete model; see position counts in separate columns.
+Local improvement does not imply the same propagated improvement.
+
+Stage                                 Local abs mean   Local decrease %
+00_original_kt                       8.042826375e-05             0.0000
+01_remove_partial_round              7.614267299e-05             5.3285
+02_round_complete_expert             7.882748816e-05             1.9903
+03_round_silu                        5.364205457e-05            33.3045
+04_round_weighted_product            4.637889832e-05            42.3351
+05_round_expert_accumulation         6.174811924e-05            23.2258
+06_expert_id_order                   3.625278464e-07            99.5493
+07_full_cpu_down_dot                 3.641059993e-07            99.5473
+08_cuda_silu                         3.086666948e-07            99.6162
+09_cuda_gate_up                      6.738991942e-09            99.9916
+10_cuda_down                         0.000000000e+00           100.0000
+only_round_silu                      6.529876758e-05            18.8112
+only_full_cpu_down                   7.882777868e-05             1.9900
+only_golden_merge                    6.494834397e-05            19.2469
+golden_graph_cpu_fused               6.494923382e-05            19.2458
+
+SCREEN: complete-model layer 39, positions per variant = 64
+00_original_kt                      1.195971313e-02
+01_remove_partial_round             1.172599470e-02
+02_round_complete_expert            1.261662354e-02
+03_round_silu                       1.081340888e-02
+04_round_weighted_product           1.231992798e-02
+05_round_expert_accumulation        1.099780516e-02
+06_expert_id_order                  1.164233551e-02
+07_full_cpu_down_dot                1.192947337e-02
+08_cuda_silu                        1.217999781e-02
+09_cuda_gate_up                     1.199233701e-02
+10_cuda_down                        0.000000000e+00
+
+FULL: complete-model layer 39, positions per variant = 256
+00_original_kt                      1.315956218e-02
+01_remove_partial_round             1.312468691e-02
+06_expert_id_order                  1.289559051e-02
+08_cuda_silu                        1.236489751e-02
+09_cuda_gate_up                     1.288559308e-02
+10_cuda_down                        0.000000000e+00
+
+ROUTING INTERVENTION: 256 positions; only down GEMM remains CPU.
+Layer 39: 1.288559308e-02 -> 3.276430609e-03; decrease 74.5729%.
+Both expert selection and routing weights are frozen jointly; this does not isolate them separately.
+
+Stage names 00..10 are cumulative. Other rows are non-cumulative controls.
+GPU replacements are diagnostic endpoint controls, not a CPU-kernel fix.
+The golden implementation/weights/data are fixed. New switches act only on the KT arithmetic replay.

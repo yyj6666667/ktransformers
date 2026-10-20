@@ -1,0 +1,49 @@
+{
+  "layers": [
+    0,
+    10,
+    20,
+    30,
+    39
+  ],
+  "positions": [
+    1,
+    2,
+    14,
+    21,
+    31
+  ],
+  "variants": {
+    "cpu_graph": {
+      "fp64_components": [],
+      "graph": "07_full_cpu_down_dot"
+    },
+    "cpu_fp64_gate_up": {
+      "fp64_components": [
+        "gu"
+      ],
+      "graph": "07_full_cpu_down_dot"
+    },
+    "cpu_fp64_gate_up_cuda_silu": {
+      "fp64_components": [
+        "gu"
+      ],
+      "graph": "08_cuda_silu"
+    },
+    "cpu_fp64_gate_up_down": {
+      "fp64_components": [
+        "down_full",
+        "gu"
+      ],
+      "graph": "07_full_cpu_down_dot"
+    },
+    "cpu_fp64_gate_up_down_cuda_silu": {
+      "fp64_components": [
+        "down_full",
+        "gu"
+      ],
+      "graph": "08_cuda_silu"
+    }
+  },
+  "scope": "CPU FP64 dot accumulations, explicit FP64 -> FP32 -> BF16 output; diagnostic only"
+}

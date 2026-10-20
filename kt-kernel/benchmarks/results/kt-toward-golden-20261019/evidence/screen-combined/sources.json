@@ -1,0 +1,13 @@
+{
+  "00_original_kt": "/dev/shm/yyj-qwen35-35b-wbw-20261019/fp32-down-merge/toward-golden/full-screen-rest-8/00_original_kt",
+  "01_remove_partial_round": "/dev/shm/yyj-qwen35-35b-wbw-20261019/fp32-down-merge/toward-golden/full-screen-8/01_remove_partial_round",
+  "10_cuda_down": "/dev/shm/yyj-qwen35-35b-wbw-20261019/fp32-down-merge/toward-golden/full-screen-upper-8/10_cuda_down",
+  "02_round_complete_expert": "/dev/shm/yyj-qwen35-35b-wbw-20261019/fp32-down-merge/toward-golden/full-screen-8/02_round_complete_expert",
+  "03_round_silu": "/dev/shm/yyj-qwen35-35b-wbw-20261019/fp32-down-merge/toward-golden/full-screen-8/03_round_silu",
+  "04_round_weighted_product": "/dev/shm/yyj-qwen35-35b-wbw-20261019/fp32-down-merge/toward-golden/full-screen-rest-8/04_round_weighted_product",
+  "05_round_expert_accumulation": "/dev/shm/yyj-qwen35-35b-wbw-20261019/fp32-down-merge/toward-golden/full-screen-rest-8/05_round_expert_accumulation",
+  "06_expert_id_order": "/dev/shm/yyj-qwen35-35b-wbw-20261019/fp32-down-merge/toward-golden/full-screen-upper-8/06_expert_id_order",
+  "07_full_cpu_down_dot": "/dev/shm/yyj-qwen35-35b-wbw-20261019/fp32-down-merge/toward-golden/full-screen-upper-8/07_full_cpu_down_dot",
+  "08_cuda_silu": "/dev/shm/yyj-qwen35-35b-wbw-20261019/fp32-down-merge/toward-golden/full-screen-upper-8/08_cuda_silu",
+  "09_cuda_gate_up": "/dev/shm/yyj-qwen35-35b-wbw-20261019/fp32-down-merge/toward-golden/full-screen-upper-8/09_cuda_gate_up"
+}

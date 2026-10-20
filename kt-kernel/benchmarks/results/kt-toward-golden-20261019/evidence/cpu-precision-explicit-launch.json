@@ -1,0 +1,13 @@
+{
+  "pid": 4076439,
+  "command": [
+    "flock",
+    "-n",
+    "/dev/shm/yyj-qwen35-35b-wbw-20261019/gpu4.lock",
+    "/dev/shm/yyj-qwen35-35b-wbw-20261019/actor-kt/venv/bin/python",
+    "/dev/shm/yyj-qwen35-35b-wbw-20261019/fp32-down-merge/toward-golden/kt-kernel/benchmarks/kt_cpu_precision_probe.py",
+    "--output",
+    "/dev/shm/yyj-qwen35-35b-wbw-20261019/fp32-down-merge/toward-golden/cpu-precision-explicit"
+  ],
+  "physical_gpu": 4
+}

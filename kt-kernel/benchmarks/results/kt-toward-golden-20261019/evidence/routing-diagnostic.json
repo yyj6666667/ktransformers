@@ -1,0 +1,406 @@
+{
+  "06_expert_id_order": {
+    "0": {
+      "changed_order": 0,
+      "changed_set": 0,
+      "positions": 64
+    },
+    "1": {
+      "changed_order": 4,
+      "changed_set": 2,
+      "positions": 64
+    },
+    "2": {
+      "changed_order": 12,
+      "changed_set": 2,
+      "positions": 64
+    },
+    "3": {
+      "changed_order": 10,
+      "changed_set": 3,
+      "positions": 64
+    },
+    "4": {
+      "changed_order": 16,
+      "changed_set": 2,
+      "positions": 64
+    },
+    "5": {
+      "changed_order": 21,
+      "changed_set": 2,
+      "positions": 64
+    },
+    "6": {
+      "changed_order": 16,
+      "changed_set": 6,
+      "positions": 64
+    },
+    "7": {
+      "changed_order": 19,
+      "changed_set": 3,
+      "positions": 64
+    },
+    "8": {
+      "changed_order": 17,
+      "changed_set": 6,
+      "positions": 64
+    },
+    "9": {
+      "changed_order": 20,
+      "changed_set": 5,
+      "positions": 64
+    },
+    "10": {
+      "changed_order": 17,
+      "changed_set": 7,
+      "positions": 64
+    },
+    "11": {
+      "changed_order": 20,
+      "changed_set": 4,
+      "positions": 64
+    },
+    "12": {
+      "changed_order": 26,
+      "changed_set": 5,
+      "positions": 64
+    },
+    "13": {
+      "changed_order": 27,
+      "changed_set": 12,
+      "positions": 64
+    },
+    "14": {
+      "changed_order": 28,
+      "changed_set": 9,
+      "positions": 64
+    },
+    "15": {
+      "changed_order": 28,
+      "changed_set": 9,
+      "positions": 64
+    },
+    "16": {
+      "changed_order": 31,
+      "changed_set": 9,
+      "positions": 64
+    },
+    "17": {
+      "changed_order": 36,
+      "changed_set": 12,
+      "positions": 64
+    },
+    "18": {
+      "changed_order": 28,
+      "changed_set": 8,
+      "positions": 64
+    },
+    "19": {
+      "changed_order": 30,
+      "changed_set": 9,
+      "positions": 64
+    },
+    "20": {
+      "changed_order": 34,
+      "changed_set": 16,
+      "positions": 64
+    },
+    "21": {
+      "changed_order": 34,
+      "changed_set": 13,
+      "positions": 64
+    },
+    "22": {
+      "changed_order": 30,
+      "changed_set": 12,
+      "positions": 64
+    },
+    "23": {
+      "changed_order": 36,
+      "changed_set": 8,
+      "positions": 64
+    },
+    "24": {
+      "changed_order": 29,
+      "changed_set": 12,
+      "positions": 64
+    },
+    "25": {
+      "changed_order": 37,
+      "changed_set": 16,
+      "positions": 64
+    },
+    "26": {
+      "changed_order": 34,
+      "changed_set": 8,
+      "positions": 64
+    },
+    "27": {
+      "changed_order": 29,
+      "changed_set": 13,
+      "positions": 64
+    },
+    "28": {
+      "changed_order": 34,
+      "changed_set": 15,
+      "positions": 64
+    },
+    "29": {
+      "changed_order": 31,
+      "changed_set": 14,
+      "positions": 64
+    },
+    "30": {
+      "changed_order": 36,
+      "changed_set": 16,
+      "positions": 64
+    },
+    "31": {
+      "changed_order": 34,
+      "changed_set": 11,
+      "positions": 64
+    },
+    "32": {
+      "changed_order": 34,
+      "changed_set": 11,
+      "positions": 64
+    },
+    "33": {
+      "changed_order": 29,
+      "changed_set": 6,
+      "positions": 64
+    },
+    "34": {
+      "changed_order": 22,
+      "changed_set": 7,
+      "positions": 64
+    },
+    "35": {
+      "changed_order": 32,
+      "changed_set": 10,
+      "positions": 64
+    },
+    "36": {
+      "changed_order": 36,
+      "changed_set": 12,
+      "positions": 64
+    },
+    "37": {
+      "changed_order": 34,
+      "changed_set": 12,
+      "positions": 64
+    },
+    "38": {
+      "changed_order": 29,
+      "changed_set": 13,
+      "positions": 64
+    },
+    "39": {
+      "changed_order": 38,
+      "changed_set": 17,
+      "positions": 64
+    }
+  },
+  "09_cuda_gate_up": {
+    "0": {
+      "changed_order": 0,
+      "changed_set": 0,
+      "positions": 64
+    },
+    "1": {
+      "changed_order": 2,
+      "changed_set": 1,
+      "positions": 64
+    },
+    "2": {
+      "changed_order": 7,
+      "changed_set": 2,
+      "positions": 64
+    },
+    "3": {
+      "changed_order": 10,
+      "changed_set": 5,
+      "positions": 64
+    },
+    "4": {
+      "changed_order": 13,
+      "changed_set": 4,
+      "positions": 64
+    },
+    "5": {
+      "changed_order": 16,
+      "changed_set": 3,
+      "positions": 64
+    },
+    "6": {
+      "changed_order": 15,
+      "changed_set": 5,
+      "positions": 64
+    },
+    "7": {
+      "changed_order": 26,
+      "changed_set": 8,
+      "positions": 64
+    },
+    "8": {
+      "changed_order": 17,
+      "changed_set": 5,
+      "positions": 64
+    },
+    "9": {
+      "changed_order": 21,
+      "changed_set": 8,
+      "positions": 64
+    },
+    "10": {
+      "changed_order": 21,
+      "changed_set": 5,
+      "positions": 64
+    },
+    "11": {
+      "changed_order": 21,
+      "changed_set": 7,
+      "positions": 64
+    },
+    "12": {
+      "changed_order": 28,
+      "changed_set": 8,
+      "positions": 64
+    },
+    "13": {
+      "changed_order": 22,
+      "changed_set": 9,
+      "positions": 64
+    },
+    "14": {
+      "changed_order": 24,
+      "changed_set": 10,
+      "positions": 64
+    },
+    "15": {
+      "changed_order": 32,
+      "changed_set": 13,
+      "positions": 64
+    },
+    "16": {
+      "changed_order": 28,
+      "changed_set": 6,
+      "positions": 64
+    },
+    "17": {
+      "changed_order": 32,
+      "changed_set": 15,
+      "positions": 64
+    },
+    "18": {
+      "changed_order": 30,
+      "changed_set": 6,
+      "positions": 64
+    },
+    "19": {
+      "changed_order": 32,
+      "changed_set": 13,
+      "positions": 64
+    },
+    "20": {
+      "changed_order": 31,
+      "changed_set": 14,
+      "positions": 64
+    },
+    "21": {
+      "changed_order": 36,
+      "changed_set": 16,
+      "positions": 64
+    },
+    "22": {
+      "changed_order": 30,
+      "changed_set": 10,
+      "positions": 64
+    },
+    "23": {
+      "changed_order": 30,
+      "changed_set": 8,
+      "positions": 64
+    },
+    "24": {
+      "changed_order": 36,
+      "changed_set": 13,
+      "positions": 64
+    },
+    "25": {
+      "changed_order": 42,
+      "changed_set": 18,
+      "positions": 64
+    },
+    "26": {
+      "changed_order": 39,
+      "changed_set": 9,
+      "positions": 64
+    },
+    "27": {
+      "changed_order": 29,
+      "changed_set": 8,
+      "positions": 64
+    },
+    "28": {
+      "changed_order": 36,
+      "changed_set": 20,
+      "positions": 64
+    },
+    "29": {
+      "changed_order": 37,
+      "changed_set": 15,
+      "positions": 64
+    },
+    "30": {
+      "changed_order": 38,
+      "changed_set": 18,
+      "positions": 64
+    },
+    "31": {
+      "changed_order": 32,
+      "changed_set": 10,
+      "positions": 64
+    },
+    "32": {
+      "changed_order": 31,
+      "changed_set": 13,
+      "positions": 64
+    },
+    "33": {
+      "changed_order": 27,
+      "changed_set": 11,
+      "positions": 64
+    },
+    "34": {
+      "changed_order": 24,
+      "changed_set": 7,
+      "positions": 64
+    },
+    "35": {
+      "changed_order": 34,
+      "changed_set": 14,
+      "positions": 64
+    },
+    "36": {
+      "changed_order": 36,
+      "changed_set": 13,
+      "positions": 64
+    },
+    "37": {
+      "changed_order": 30,
+      "changed_set": 10,
+      "positions": 64
+    },
+    "38": {
+      "changed_order": 31,
+      "changed_set": 17,
+      "positions": 64
+    },
+    "39": {
+      "changed_order": 34,
+      "changed_set": 15,
+      "positions": 64
+    }
+  }
+}

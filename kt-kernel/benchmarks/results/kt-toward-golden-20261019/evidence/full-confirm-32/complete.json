@@ -1,0 +1,11 @@
+{
+  "exit": "success",
+  "stages": [
+    "00_original_kt",
+    "06_expert_id_order",
+    "08_cuda_silu",
+    "09_cuda_gate_up",
+    "10_cuda_down"
+  ],
+  "positions_per_stage": 256
+}

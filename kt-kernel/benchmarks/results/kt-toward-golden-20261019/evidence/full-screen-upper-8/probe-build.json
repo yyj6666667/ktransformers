@@ -1,0 +1,20 @@
+{
+  "command": [
+    "g++",
+    "-O3",
+    "-shared",
+    "-fPIC",
+    "-fopenmp",
+    "-mavx512f",
+    "-mavx512bw",
+    "-mavx512bf16",
+    "-mavx512vl",
+    "-ffast-math",
+    "/dev/shm/yyj-qwen35-35b-wbw-20261019/fp32-down-merge/toward-golden/kt-kernel/benchmarks/kt_to_golden_math.cpp",
+    "-o",
+    "/dev/shm/yyj-qwen35-35b-wbw-20261019/fp32-down-merge/toward-golden/full-screen-upper-8/kt_to_golden_math.so"
+  ],
+  "source_sha256": "e7e835eb9632758eff5837b5d7439871a1ab9190c9a4777791ccef25326ed1f1",
+  "binary_sha256": "e3b877d25e2322dbe976409aebc01992f70fb6159331fe26d0083e2a1656f7da",
+  "scope": "independent diagnostic arithmetic replay; no backward"
+}

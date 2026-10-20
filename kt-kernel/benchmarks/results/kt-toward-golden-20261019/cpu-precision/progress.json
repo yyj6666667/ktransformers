@@ -1,0 +1,62 @@
+[
+  {
+    "layer": 0,
+    "samples": 40,
+    "seconds": 2.407139778137207,
+    "abs_mean": {
+      "cpu_graph": 5.431938916444779e-08,
+      "cpu_fp64_gate_up": 8.556526154279709e-09,
+      "cpu_fp64_gate_up_cuda_silu": 8.556526154279709e-09,
+      "cpu_fp64_gate_up_down": 7.62520357966423e-09,
+      "cpu_fp64_gate_up_down_cuda_silu": 7.62520357966423e-09
+    }
+  },
+  {
+    "layer": 10,
+    "samples": 40,
+    "seconds": 1.8855807781219482,
+    "abs_mean": {
+      "cpu_graph": 1.4684046618640422e-07,
+      "cpu_fp64_gate_up": 9.645009413361549e-09,
+      "cpu_fp64_gate_up_cuda_silu": 9.645009413361549e-09,
+      "cpu_fp64_gate_up_down": 7.683411240577698e-09,
+      "cpu_fp64_gate_up_down_cuda_silu": 7.683411240577698e-09
+    }
+  },
+  {
+    "layer": 20,
+    "samples": 40,
+    "seconds": 1.8919992446899414,
+    "abs_mean": {
+      "cpu_graph": 2.3442698875442148e-07,
+      "cpu_fp64_gate_up": 7.259659469127655e-08,
+      "cpu_fp64_gate_up_cuda_silu": 7.259659469127655e-08,
+      "cpu_fp64_gate_up_down": 6.104819476604461e-08,
+      "cpu_fp64_gate_up_down_cuda_silu": 6.104819476604461e-08
+    }
+  },
+  {
+    "layer": 30,
+    "samples": 40,
+    "seconds": 1.8646388053894043,
+    "abs_mean": {
+      "cpu_graph": 3.273598849773407e-07,
+      "cpu_fp64_gate_up": 1.0025687515735627e-07,
+      "cpu_fp64_gate_up_cuda_silu": 1.0025687515735627e-07,
+      "cpu_fp64_gate_up_down": 8.870847523212433e-08,
+      "cpu_fp64_gate_up_down_cuda_silu": 8.870847523212433e-08
+    }
+  },
+  {
+    "layer": 39,
+    "samples": 40,
+    "seconds": 1.9168925285339355,
+    "abs_mean": {
+      "cpu_graph": 2.730078995227814e-06,
+      "cpu_fp64_gate_up": 2.0242296159267426e-06,
+      "cpu_fp64_gate_up_cuda_silu": 1.9632279872894288e-07,
+      "cpu_fp64_gate_up_down": 2.029445022344589e-06,
+      "cpu_fp64_gate_up_down_cuda_silu": 2.0153820514678956e-07
+    }
+  }
+]
